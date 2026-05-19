@@ -1,0 +1,98 @@
+# All credentials and image tags come from the .env file next to this compose file.
+#
+# How `docker compose up -d` works on a fresh machine:
+#   1. Docker pulls datacrumbs762/spray-plant-sqlserver (custom image with init
+#      logic baked in) plus the backend and dashboard images.
+#   2. SQL Server starts; its custom entrypoint runs init.sql against the
+#      sqlserver-data named volume.
+#   3. First run: volume is empty, so master.mdf etc. are created and
+#      LeatherCount + tables are created from init.sql using DB_PASSWORD.
+#   4. Subsequent runs: volume already has the data, init.sql is no-op and
+#      the same DB is reused.
+#
+# To rebuild and push the SQL Server image after changing schema:
+#   docker compose build sqlserver
+#   docker push datacrumbs762/spray-plant-sqlserver:latest
+
+services:
+  sqlserver:
+    image: ${SQLSERVER_IMAGE:-datacrumbs762/spray-plant-sqlserver}:${IMAGE_TAG:-latest}
+    build:
+      context: ./sqlserver
+    container_name: spray-plant-sqlserver
+    restart: unless-stopped
+    ports:
+      - "${MSSQL_PORT:-1433}:1433"
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${DB_PASSWORD}
+      MSSQL_PID: ${MSSQL_PID:-Express}
+      DB_NAME: ${DB_NAME:-LeatherCount}
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+    networks:
+      - spray-net
+    healthcheck:
+      test: [
+        "CMD-SHELL",
+        "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -No -Q \"SELECT DB_ID('$$DB_NAME')\" || exit 1"
+      ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+
+  backend:
+    image: ${BACKEND_IMAGE:-datacrumbs762/spray-plant-backend}:${IMAGE_TAG:-latest}
+    container_name: spray-plant-backend
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-8001}:8001"
+    env_file:
+      - .env
+    environment:
+      DB_SERVER: sqlserver,1433
+      DB_NAME: ${DB_NAME:-LeatherCount}
+      DB_USER: ${DB_USER:-sa}
+      DB_PASSWORD: ${DB_PASSWORD}
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    networks:
+      - spray-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health/db')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  dashboard:
+    image: ${FRONTEND_IMAGE:-datacrumbs762/spray-plant-dashboard}:${IMAGE_TAG:-latest}
+    build:
+      context: ./dashboard
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL}
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
+    container_name: spray-plant-dashboard
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    env_file:
+      - .env
+    environment:
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY}
+      NODE_ENV: production
+    depends_on:
+      backend:
+        condition: service_started
+    networks:
+      - spray-net
+
+volumes:
+  sqlserver-data:
+
+networks:
+  spray-net:
+    driver: bridge

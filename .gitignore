@@ -1,0 +1,39 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Python virtual environments
+backend/.venv/
+inference-client/.venv/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+*.egg-info/
+
+# Node / Next.js (dashboard has its own .gitignore too)
+dashboard/node_modules/
+dashboard/.next/
+dashboard/out/
+dashboard/.vercel/
+*.tsbuildinfo
+
+# Docker build artifacts
+**/.dockerignore
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/settings.json
+.idea/
+
+# Inference client outputs / recordings (large files)
+inference-client/results/
+inference-client/recordings/
+inference-client/videos/
+inference-client/*.pt
+
+# Claude Code internal
+.claude/

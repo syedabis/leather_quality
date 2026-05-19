@@ -1,0 +1,126 @@
+{
+  "_README": {
+    "purpose": "Per-unit inference config. Set 'source' for each unit to its real camera URL or file path.",
+    "source_field": "RTSP/HTTP URL or absolute file path. Leave empty to fall back to videos/<unit>/*.mp4",
+    "examples": {
+      "rtsp": "rtsp://admin:Pass123@10.0.5.21:554/Streaming/Channels/101",
+      "http_mjpeg": "http://10.0.5.21/mjpg/video.mjpg",
+      "local_file": "D:\\Ahmer\\deploy_v0\\inference-client\\videos\\"
+    },
+    "ROI_and_line": "Coordinates are NORMALIZED (0.0-1.0). x=0.25 means 25% from left, w=0.50 means 50% width. Adjust per camera angle."
+  },
+  "SP-01": {
+    "source": "rtsp://admin:Dada1234@110.39.8.243:7411/Streaming/Channels/1",
+    "roi": {
+      "x": 0.05,
+      "y": 0.25,
+      "w": 0.90,
+      "h": 0.60
+    },
+    "line": {
+      "start": [
+        0.05,
+        0.15
+      ],
+      "end": [
+        0.75,
+        0.70
+      ]
+    }
+  },
+  "SP-02": {
+    "source": "D:\\Ahmer\\deploy_v0\\inference-client\\videos\\SP-02",
+    "roi": {
+      "x": 0.10,
+      "y": 0.30,
+      "w": 0.70,
+      "h": 0.65
+    },
+    "line": {
+      "start": [
+        0.10,
+        0.20
+      ],
+      "end": [
+        0.75,
+        0.30
+      ]
+    }
+  },
+  "SP-03": {
+    "source": "D:\\Ahmer\\deploy_v0\\inference-client\\videos\\SP-03",
+    "roi": {
+      "x": 0.15,
+      "y": 0.20,
+      "w": 0.60,
+      "h": 0.70
+    },
+    "line": {
+      "start": [
+        0.10,
+        0.70
+      ],
+      "end": [
+        0.75,
+        0.70
+      ]
+    }
+  },
+  "SP-04": {
+    "source": "D:\\Ahmer\\deploy_v0\\inference-client\\videos\\SP-04",
+    "roi": {
+      "x": 0.25,
+      "y": 0.25,
+      "w": 0.45,
+      "h": 0.55
+    },
+    "line": {
+      "start": [
+        0.32,
+        0.67
+      ],
+      "end": [
+        0.80,
+        0.67
+      ]
+    }
+  },
+  "SP-05": {
+    "source": "D:\\Ahmer\\deploy_v0\\inference-client\\videos\\SP-05",
+    "roi": {
+      "x": 0.10,
+      "y": 0.20,
+      "w": 0.70,
+      "h": 0.50
+    },
+    "line": {
+      "start": [
+        0.10,
+        0.70
+      ],
+      "end": [
+        0.75,
+        0.70
+      ]
+    }
+  },
+  "SP-06": {
+    "source": "D:\\Ahmer\\deploy_v0\\inference-client\\videos\\SP-06",
+    "roi": {
+      "x": 0.25,
+      "y": 0.17,
+      "w": 0.60,
+      "h": 0.45
+    },
+    "line": {
+      "start": [
+        0.25,
+        0.70
+      ],
+      "end": [
+        0.75,
+        0.70
+      ]
+    }
+  }
+}

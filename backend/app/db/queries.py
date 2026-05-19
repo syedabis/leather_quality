@@ -1,0 +1,268 @@
+"""
+Read queries for the FastAPI backend.
+All queries filter by source_note = unit_id (e.g. "SP-01").
+Delta method for piece counts: MAX - MIN per session (matches analytics_server.py).
+"""
+
+from __future__ import annotations
+from datetime import datetime, timedelta
+from .connection import get_connection
+
+
+UNITS = ["SP-01", "SP-02", "SP-03", "SP-04", "SP-05", "SP-06"]
+
+PLANT_NAMES: dict[str, str] = {
+    "SP-01": "Spray Plant 1",
+    "SP-02": "Spray Plant 2",
+    "SP-03": "Spray Plant 3",
+    "SP-04": "Spray Plant 4",
+    "SP-05": "Spray Plant 5",
+    "SP-06": "Spray Plant 6",
+}
+
+
+def _date_range(from_date: str | None, to_date: str | None) -> tuple[str, str]:
+    to   = to_date   or datetime.now().strftime("%Y-%m-%d")
+    from_ = from_date or (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    return from_, to
+
+
+# ── Per-unit latest count ──────────────────────────────────────────────────
+
+def get_latest_counts() -> list[dict]:
+    """Latest total_count for each unit — used for the live dashboard cards."""
+    sql = """
+        SELECT source_note, total_count, belt_active, saved_at
+        FROM LeatherCountLog l1
+        WHERE saved_at = (
+            SELECT MAX(saved_at) FROM LeatherCountLog l2
+            WHERE l2.source_note = l1.source_note
+        )
+    """
+    results = []
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(sql)
+        for row in cur.fetchall():
+            results.append({
+                "unit":        row[0],
+                "total_count": row[1],
+                "belt_active": bool(row[2]),
+                "saved_at":    row[3].isoformat() if row[3] else None,
+            })
+    return results
+
+
+# ── Sessions ───────────────────────────────────────────────────────────────
+
+def get_sessions(unit: str | None = None,
+                 from_date: str | None = None,
+                 to_date: str | None = None) -> list[dict]:
+    from_, to = _date_range(from_date, to_date)
+    where = "WHERE saved_at >= ? AND saved_at < DATEADD(day,1,CAST(? AS DATE))"
+    params: list = [from_, to]
+    if unit:
+        where += " AND source_note = ?"
+        params.append(unit)
+
+    sql = f"""
+        SELECT id, source_note, session_num, start_time_s, end_time_s,
+               duration_s, piece_count, is_active, saved_at
+        FROM LeatherSessions
+        {where}
+        ORDER BY saved_at DESC
+    """
+    results = []
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        for row in cur.fetchall():
+            results.append({
+                "id":           row[0],
+                "unit":         row[1],
+                "session_num":  row[2],
+                "start_time_s": row[3],
+                "end_time_s":   row[4],
+                "duration_s":   row[5],
+                "piece_count":  row[6],
+                "is_active":    bool(row[7]),
+                "saved_at":     row[8].isoformat() if row[8] else None,
+            })
+    return results
+
+
+# ── Idle periods ───────────────────────────────────────────────────────────
+
+def get_idle_periods(unit: str | None = None,
+                     from_date: str | None = None,
+                     to_date: str | None = None) -> list[dict]:
+    from_, to = _date_range(from_date, to_date)
+    where = "WHERE idle_start >= ? AND idle_start < DATEADD(day,1,CAST(? AS DATE))"
+    params: list = [from_, to]
+    if unit:
+        where += " AND source_note = ?"
+        params.append(unit)
+
+    sql = f"""
+        SELECT id, source_note, idle_start, idle_end, duration_s, total_count_at_stop
+        FROM IdlePeriods
+        {where}
+        ORDER BY idle_start DESC
+    """
+    results = []
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        for row in cur.fetchall():
+            results.append({
+                "id":                  row[0],
+                "unit":                row[1],
+                "idle_start":          row[2].isoformat() if row[2] else None,
+                "idle_end":            row[3].isoformat() if row[3] else None,
+                "duration_s":          row[4],
+                "total_count_at_stop": row[5],
+            })
+    return results
+
+
+# ── Summary ────────────────────────────────────────────────────────────────
+
+def get_summary(unit: str | None = None,
+                from_date: str | None = None,
+                to_date: str | None = None) -> dict:
+    """
+    Total pieces (delta method), session count, and avg utilization
+    for a date range, optionally filtered to one unit.
+    """
+    from_, to = _date_range(from_date, to_date)
+    where = "WHERE saved_at >= ? AND saved_at < DATEADD(day,1,CAST(? AS DATE))"
+    params: list = [from_, to]
+    if unit:
+        where += " AND source_note = ?"
+        params.append(unit)
+
+    sql = f"""
+        SELECT
+            COUNT(DISTINCT session_num)              AS session_count,
+            AVG(CAST(utilization_pct AS FLOAT))      AS avg_utilization,
+            SUM(total_count)                         AS raw_total
+        FROM LeatherCountLog
+        {where}
+    """
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        row = cur.fetchone()
+
+    return {
+        "unit":            unit or "all",
+        "from":            from_,
+        "to":              to,
+        "session_count":   row[0] or 0,
+        "avg_utilization": round(row[1], 1) if row[1] else None,
+        "total_count":     row[2] or 0,
+    }
+
+
+# ── Full plant state (for WsFrameMessage) ─────────────────────────────────────
+
+# A unit's CurrentHourMetrics row is treated as "live" if FrameProcessor wrote to it
+# within this many seconds. If the inference worker exits, the cached aggregates
+# (e.g. cumulative uptime_frames > downtime_frames) would otherwise keep reporting
+# the plant as Running forever.
+_FRESH_WINDOW_S = 30
+
+
+def get_plant_states() -> list[dict]:
+    """
+    Returns a WsFrameMessage-shaped dict for every unit.
+    Reads from CurrentHourMetrics (written by FrameProcessor every frame)
+    so the WebSocket reflects live inference data without needing LeatherCountLog.
+
+    Freshness: a row is considered "online" only if last_updated is within
+    _FRESH_WINDOW_S seconds — otherwise the unit reports offline + total_count
+    from the last seen row (so KPI tiles keep their final value but the live
+    Running indicator stops blinking).
+    """
+    sql = """
+        SELECT
+            source_note,
+            piece_count,
+            frame_count,
+            uptime_frames,
+            downtime_frames,
+            idle_sessions_count,
+            idle_time_s,
+            sum_utilization,
+            last_updated,
+            hour_start,
+            DATEDIFF(SECOND, last_updated, SYSDATETIME()) AS staleness_s
+        FROM dbo.CurrentHourMetrics
+        WHERE CAST(hour_start AS DATE) = CAST(GETDATE() AS DATE)
+    """
+
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(sql)
+        # Pick the most-recently-updated row per unit (in case multiple hours exist today).
+        rows: dict[str, tuple] = {}
+        for r in cur.fetchall():
+            existing = rows.get(r[0])
+            if existing is None or r[8] > existing[8]:
+                rows[r[0]] = r
+
+    result = []
+    for unit in UNITS:
+        row = rows.get(unit)
+        if row is None:
+            result.append({
+                "type":          "frame",
+                "plant_id":      unit,
+                "plant_name":    PLANT_NAMES.get(unit, unit),
+                "online":        False,
+                "belt_active":   False,
+                "total_count":   0,
+                "session_count": 0,
+                "session_num":   0,
+                "active_tracks": 0,
+                "utilization":   0.0,
+                "runtime_s":     0.0,
+                "idle_s":        0.0,
+                "proc_fps":      0.0,
+                "idle_sessions": 0,
+                "thumbnail":     None,
+                "sessions":      [],
+            })
+            continue
+
+        (_, piece_count, frame_count, uptime_frames, downtime_frames,
+         idle_sessions, idle_time_s, sum_util, _last_updated, _hour_start,
+         staleness_s) = row
+
+        is_fresh    = staleness_s is not None and staleness_s <= _FRESH_WINDOW_S
+        frame_count = frame_count or 1
+        avg_util    = round((uptime_frames or 0) * 100.0 / frame_count, 1)
+        runtime_s   = uptime_frames * (1 / 6)   # approx: frames at ~6fps when active
+        # Belt is "active" only when (a) the worker is currently writing AND
+        # (b) the cumulative uptime out-pacing downtime in the last hour bucket.
+        belt_active = is_fresh and (uptime_frames > downtime_frames)
+
+        result.append({
+            "type":          "frame",
+            "plant_id":      unit,
+            "plant_name":    PLANT_NAMES.get(unit, unit),
+            "online":        is_fresh,
+            "belt_active":   belt_active,
+            "total_count":   piece_count or 0,
+            "session_count": idle_sessions or 0,
+            "session_num":   idle_sessions or 0,
+            "active_tracks": 0,
+            "utilization":   avg_util,  # keep last known value; online/belt_active flags convey staleness
+            "runtime_s":     round(runtime_s, 1),
+            "idle_s":        round(idle_time_s or 0.0, 1),
+            "proc_fps":      0.0,
+            "idle_sessions": idle_sessions or 0,
+            "thumbnail":     None,
+            "sessions":      [],
+        })
+    return result

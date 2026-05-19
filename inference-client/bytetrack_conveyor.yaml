@@ -1,0 +1,16 @@
+# Ultralytics ByteTrack — tuned for conveyor belt leather detection
+# Objective: Assign IDs immediately to single items and prevent nearby items from merging
+
+tracker_type: bytetrack
+track_high_thresh: 0.25      # First-stage match threshold
+track_low_thresh: 0.1        # Second-stage threshold for low-score detections
+
+# CRITICAL: Lower to start tracks immediately for single items
+new_track_thresh: 0.15
+
+# CRITICAL: Lower to prevent nearby items from merging into one track
+# Default 0.8 is too permissive; 0.4 ensures distinct items stay separate
+match_thresh: 0.4
+
+track_buffer: 30             # Keep lost tracks alive longer (handles occlusion)
+fuse_score: True             # Fuse detection score with motion for better matching
