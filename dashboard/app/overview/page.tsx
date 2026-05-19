@@ -120,14 +120,18 @@ function MiniChart({ title, data, series, type = 'line', delay = 0 }: MiniChartP
 type ChartView = 'cumulative' | 'per-plant';
 
 // ── Per-plant color palette (consistent across all charts) ───────────────────
-const PLANT_SERIES = [
-  { key: 'sp-01', color: '#22C55E', label: 'SP-01' },
-  { key: 'sp-02', color: '#F59E0B', label: 'SP-02' },
-  { key: 'sp-03', color: '#8B5CF6', label: 'SP-03' },
-  { key: 'sp-04', color: '#EF4444', label: 'SP-04' },
-  { key: 'sp-05', color: '#3B82F6', label: 'SP-05' },
-  { key: 'sp-06', color: '#EC4899', label: 'SP-06' },
+const PLANT_COLORS = [
+  { id: 'sp-01', color: '#22C55E', label: 'SP-01' },
+  { id: 'sp-02', color: '#F59E0B', label: 'SP-02' },
+  { id: 'sp-03', color: '#8B5CF6', label: 'SP-03' },
+  { id: 'sp-04', color: '#EF4444', label: 'SP-04' },
+  { id: 'sp-05', color: '#3B82F6', label: 'SP-05' },
+  { id: 'sp-06', color: '#EC4899', label: 'SP-06' },
 ];
+const PLANT_SERIES         = PLANT_COLORS.map(p => ({ key: p.id,                  color: p.color, label: p.label }));
+const PLANT_SERIES_UPTIME  = PLANT_COLORS.map(p => ({ key: `${p.id}-uptime`,      color: p.color, label: p.label }));
+const PLANT_SERIES_IDLE_S  = PLANT_COLORS.map(p => ({ key: `${p.id}-idle_sess`,   color: p.color, label: p.label }));
+const PLANT_SERIES_IDLE_T  = PLANT_COLORS.map(p => ({ key: `${p.id}-idle_time`,   color: p.color, label: p.label }));
 
 const PLANT_NAME: Record<string, string> = Object.fromEntries(PLANTS.map(p => [p.id, p.name]));
 
@@ -204,12 +208,19 @@ export default function Overview() {
       label: string; total: number; uptime: number; downtime: number; avg: number;
       idle_sessions: number; idle_time_s: number;
       'sp-01': number; 'sp-02': number; 'sp-03': number; 'sp-04': number; 'sp-05': number; 'sp-06': number;
+      'sp-01-uptime': number; 'sp-02-uptime': number; 'sp-03-uptime': number; 'sp-04-uptime': number; 'sp-05-uptime': number; 'sp-06-uptime': number;
+      'sp-01-idle_sess': number; 'sp-02-idle_sess': number; 'sp-03-idle_sess': number; 'sp-04-idle_sess': number; 'sp-05-idle_sess': number; 'sp-06-idle_sess': number;
+      'sp-01-idle_time': number; 'sp-02-idle_time': number; 'sp-03-idle_time': number; 'sp-04-idle_time': number; 'sp-05-idle_time': number; 'sp-06-idle_time': number;
       count: number;
     };
     const newBucket = (label: string): Bucket => ({
       label, total: 0, uptime: 0, downtime: 0, avg: 0,
       idle_sessions: 0, idle_time_s: 0,
-      'sp-01': 0, 'sp-02': 0, 'sp-03': 0, 'sp-04': 0, 'sp-05': 0, 'sp-06': 0, count: 0,
+      'sp-01': 0, 'sp-02': 0, 'sp-03': 0, 'sp-04': 0, 'sp-05': 0, 'sp-06': 0,
+      'sp-01-uptime': 0, 'sp-02-uptime': 0, 'sp-03-uptime': 0, 'sp-04-uptime': 0, 'sp-05-uptime': 0, 'sp-06-uptime': 0,
+      'sp-01-idle_sess': 0, 'sp-02-idle_sess': 0, 'sp-03-idle_sess': 0, 'sp-04-idle_sess': 0, 'sp-05-idle_sess': 0, 'sp-06-idle_sess': 0,
+      'sp-01-idle_time': 0, 'sp-02-idle_time': 0, 'sp-03-idle_time': 0, 'sp-04-idle_time': 0, 'sp-05-idle_time': 0, 'sp-06-idle_time': 0,
+      count: 0,
     });
     const finalize = (b: Bucket): ChartRow => ({
       label: b.label,
@@ -218,8 +229,11 @@ export default function Overview() {
       downtime:     b.count ? Math.round((b.downtime / b.count) * 10) / 10 : 0,
       avg:          b.count ? Math.round((b.avg      / b.count) * 10) / 10 : 0,
       idle_sessions: b.idle_sessions,
-      idle_time_s:   Math.round(b.idle_time_s / 60 * 10) / 10,  // convert s → min for display
+      idle_time_s:   Math.round(b.idle_time_s / 60 * 10) / 10,
       'sp-01': b['sp-01'], 'sp-02': b['sp-02'], 'sp-03': b['sp-03'], 'sp-04': b['sp-04'], 'sp-05': b['sp-05'], 'sp-06': b['sp-06'],
+      'sp-01-uptime': b['sp-01-uptime'], 'sp-02-uptime': b['sp-02-uptime'], 'sp-03-uptime': b['sp-03-uptime'], 'sp-04-uptime': b['sp-04-uptime'], 'sp-05-uptime': b['sp-05-uptime'], 'sp-06-uptime': b['sp-06-uptime'],
+      'sp-01-idle_sess': b['sp-01-idle_sess'], 'sp-02-idle_sess': b['sp-02-idle_sess'], 'sp-03-idle_sess': b['sp-03-idle_sess'], 'sp-04-idle_sess': b['sp-04-idle_sess'], 'sp-05-idle_sess': b['sp-05-idle_sess'], 'sp-06-idle_sess': b['sp-06-idle_sess'],
+      'sp-01-idle_time': b['sp-01-idle_time'], 'sp-02-idle_time': b['sp-02-idle_time'], 'sp-03-idle_time': b['sp-03-idle_time'], 'sp-04-idle_time': b['sp-04-idle_time'], 'sp-05-idle_time': b['sp-05-idle_time'], 'sp-06-idle_time': b['sp-06-idle_time'],
     });
 
     // AbortController so stale in-flight fetches don't overwrite fresh data
@@ -258,7 +272,11 @@ export default function Overview() {
               buckets[h].avg           += row.avg_utilization_pct ?? 0;
               buckets[h].idle_sessions += row.idle_sessions ?? 0;
               buckets[h].idle_time_s   += row.idle_time_s ?? 0;
-              buckets[h][unitKey]       = row.pieces ?? 0;
+              const bh = buckets[h] as unknown as Record<string, number>;
+              bh[unitKey]                   = row.pieces ?? 0;
+              bh[`${unitKey}-uptime`]       = row.uptime_pct ?? 0;
+              bh[`${unitKey}-idle_sess`]    = row.idle_sessions ?? 0;
+              bh[`${unitKey}-idle_time`]    = row.idle_time_s ? Math.round((row.idle_time_s / 60) * 10) / 10 : 0;
               buckets[h].count++;
             });
           });
@@ -293,7 +311,11 @@ export default function Overview() {
             buckets[key].idle_time_s   += row.idle_time_s ?? 0;
             if (row.unit) {
               const k = row.unit.toLowerCase() as 'sp-01' | 'sp-02' | 'sp-03' | 'sp-04' | 'sp-05' | 'sp-06';
-              buckets[key][k] = (buckets[key][k] || 0) + (row.pieces ?? 0);
+              const bk = buckets[key] as unknown as Record<string, number>;
+              bk[k]               = (bk[k] || 0) + (row.pieces ?? 0);
+              bk[`${k}-uptime`]   = row.uptime_pct ?? 0;
+              bk[`${k}-idle_sess`]= (bk[`${k}-idle_sess`] || 0) + (row.idle_sessions ?? 0);
+              bk[`${k}-idle_time`]= (bk[`${k}-idle_time`] || 0) + (row.idle_time_s ? Math.round((row.idle_time_s / 60) * 10) / 10 : 0);
             }
             buckets[key].count++;
           });
@@ -461,7 +483,7 @@ export default function Overview() {
                 <Line type="monotone" dataKey="uptime" name="Uptime %" stroke="#2AAA8A"
                   strokeWidth={2} dot={{ r: 3, fill: '#2AAA8A', strokeWidth: 0 }}
                   activeDot={{ r: 5 }} animationDuration={700} />
-              ) : PLANT_SERIES.map(s => (
+              ) : PLANT_SERIES_UPTIME.map(s => (
                 <Line key={s.key} type="monotone" dataKey={s.key} name={s.label} stroke={s.color}
                   strokeWidth={2} dot={{ r: 3, fill: s.color, strokeWidth: 0 }}
                   activeDot={{ r: 5 }} animationDuration={700} />
@@ -537,7 +559,7 @@ export default function Overview() {
               {idleSessView === 'cumulative' ? (
                 <Line type="monotone" dataKey="idle_sessions" name="Idle Sessions" stroke="#2AAA8A"
                   strokeWidth={2} dot={{ r: 3, fill: '#2AAA8A', strokeWidth: 0 }} activeDot={{ r: 5 }} animationDuration={700} />
-              ) : PLANT_SERIES.map(s => (
+              ) : PLANT_SERIES_IDLE_S.map(s => (
                 <Line key={s.key} type="monotone" dataKey={s.key} name={s.label} stroke={s.color}
                   strokeWidth={2} dot={{ r: 3, fill: s.color, strokeWidth: 0 }} activeDot={{ r: 5 }} animationDuration={700} />
               ))}
@@ -577,7 +599,7 @@ export default function Overview() {
                 <Line type="monotone" dataKey="idle_time_s" name="Idle Time (min)" stroke="#2AAA8A"
                   strokeWidth={2} dot={{ r: 3, fill: '#2AAA8A', strokeWidth: 0 }}
                   activeDot={{ r: 5 }} animationDuration={700} />
-              ) : PLANT_SERIES.map(s => (
+              ) : PLANT_SERIES_IDLE_T.map(s => (
                 <Line key={s.key} type="monotone" dataKey={s.key} name={s.label} stroke={s.color}
                   strokeWidth={2} dot={{ r: 3, fill: s.color, strokeWidth: 0 }} activeDot={{ r: 5 }} animationDuration={700} />
               ))}
