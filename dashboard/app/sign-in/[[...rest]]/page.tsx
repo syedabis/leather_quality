@@ -1,5 +1,5 @@
 "use client";
-import { useAuth, useSignIn } from '@clerk/nextjs';
+import { useAuth, useSignIn, useClerk } from '@clerk/nextjs';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { FiAlertCircle } from 'react-icons/fi';
@@ -17,7 +17,8 @@ export default function SignIn() {
   }, [isLoaded, isSignedIn, router]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { signIn, setActive } = useSignIn() as any;
+  const { signIn } = useSignIn() as any;
+  const { setActive } = useClerk();
 
   const [identifier, setIdentifier] = useState('');
   const [password,   setPassword]   = useState('');
@@ -32,19 +33,15 @@ export default function SignIn() {
     setIsFetching(true);
 
     try {
-      const result = await signIn.create({
-        strategy: 'password',
-        identifier,
-        password,
-      });
+      await signIn.create({ strategy: 'password', identifier, password });
 
-      if (result.status === 'complete') {
-        await setActive({ session: result.createdSessionId });
+      if (signIn.status === 'complete') {
+        await setActive({ session: signIn.createdSessionId });
         router.push('/overview');
-      } else if (result.status === 'needs_second_factor') {
+      } else if (signIn.status === 'needs_second_factor') {
         setSubmitErr('Two-factor authentication is required. Please disable MFA in Clerk dashboard.');
       } else {
-        setSubmitErr(`Sign-in returned unexpected status: ${result.status}`);
+        setSubmitErr(`Sign-in failed (status: ${signIn.status}). Check credentials and try again.`);
       }
     } catch (err: unknown) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
