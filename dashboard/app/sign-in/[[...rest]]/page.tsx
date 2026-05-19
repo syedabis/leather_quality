@@ -32,13 +32,19 @@ export default function SignIn() {
     setIsFetching(true);
 
     try {
-      const result = await signIn.create({ identifier, password });
+      const result = await signIn.create({
+        strategy: 'password',
+        identifier,
+        password,
+      });
 
       if (result.status === 'complete') {
         await setActive({ session: result.createdSessionId });
         router.push('/overview');
+      } else if (result.status === 'needs_second_factor') {
+        setSubmitErr('Two-factor authentication is required. Please disable MFA in Clerk dashboard.');
       } else {
-        setSubmitErr('Sign-in incomplete. Please try again.');
+        setSubmitErr(`Sign-in returned unexpected status: ${result.status}`);
       }
     } catch (err: unknown) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
