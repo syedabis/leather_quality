@@ -39,25 +39,16 @@ const IDLE_BREAKDOWN: Record<PlantId, [number, number, number]> = {
   'SP-06': [39, 13, 48],
 };
 
-const STATUS_SCENARIOS: Array<Partial<Record<PlantId, { belt_active: boolean; online: boolean }>>> = [
-  {},
-  { 'SP-02': { belt_active: true,  online: true } },
-  { 'SP-01': { belt_active: false, online: true }, 'SP-02': { belt_active: true, online: true } },
-  { 'SP-02': { belt_active: false, online: true } },
-  { 'SP-04': { belt_active: false, online: true } },
-  {},
-];
 
 // ── Plant card ─────────────────────────────────────────────────────────────────
 interface PlantCardProps {
   plant: PlantState;
-  plantIdx: number;
   dayElapsedSecs: number;
   delay?: number;
 }
 
-function PlantCard({ plant, plantIdx, dayElapsedSecs, delay = 0 }: PlantCardProps) {
-  const displayId = `SP-${plantIdx + 1}`;
+function PlantCard({ plant, dayElapsedSecs, delay = 0 }: PlantCardProps) {
+  const displayId = plant.plant_id;
   const lotInfo   = LOT_DATA[plant.plant_id as PlantId] ?? { lot: '', party: 'Unknown', orderId: '—', articleNo: '—', articleName: '—', color: '—' };
   const lotStyle  = LOT_COLORS[plant.plant_id as PlantId] ?? { bg: '#1a1a1a', text: '#fff' };
   const lotLabel  = lotInfo.lot?.trim() ? lotInfo.lot : 'unaccounted';
@@ -67,8 +58,8 @@ function PlantCard({ plant, plantIdx, dayElapsedSecs, delay = 0 }: PlantCardProp
   const isRunning = plant.online && plant.belt_active;
   const isIdle    = plant.online && !plant.belt_active;
 
-  const activeHrs = (plant.runtime_s / 3600).toFixed(1);
-  const idleHrs   = (plant.idle_s   / 3600).toFixed(1);
+  const activeHrs = `${(plant.runtime_s / 3600).toFixed(2)}h`;
+  const idleHrs   = `${(plant.idle_s   / 3600).toFixed(2)}h`;
 
   // Progress bar — proportional to day elapsed
   const total      = dayElapsedSecs || 1;
@@ -153,8 +144,8 @@ function PlantCard({ plant, plantIdx, dayElapsedSecs, delay = 0 }: PlantCardProp
             <p className="text-gray-500 text-[10px] font-medium leading-tight mb-1.5 h-[28px] flex items-end">
               Active
             </p>
-            <p className="text-green-600 dark:text-green-400 font-black text-2xl leading-none tabular-nums">
-              {activeHrs}h
+            <p className="text-green-600 dark:text-green-400 font-black text-lg leading-none tabular-nums truncate">
+              {activeHrs}
             </p>
           </div>
         </div>
@@ -165,8 +156,8 @@ function PlantCard({ plant, plantIdx, dayElapsedSecs, delay = 0 }: PlantCardProp
         <span className="text-amber-700 text-[10px] font-black uppercase tracking-widest leading-tight">
           TOTAL<br />IDLE
         </span>
-        <span className="text-orange-500 dark:text-orange-400 font-black text-2xl tabular-nums leading-none">
-          {idleHrs}h
+        <span className="text-orange-500 dark:text-orange-400 font-black text-lg tabular-nums leading-none">
+          {idleHrs}
         </span>
       </div>
 
@@ -212,40 +203,32 @@ function PlantCard({ plant, plantIdx, dayElapsedSecs, delay = 0 }: PlantCardProp
 export default function FloorView() {
   const { plants, connected } = usePlantsData();
   const { collapsed, hidden: sidebarHidden } = useSidebar();
-  const [statusTick, setStatusTick] = useState(0);
-  const [now,        setNow]        = useState(new Date());
+  const [now, setNow] = useState(new Date());
 
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1_000);
     return () => clearInterval(id);
   }, []);
 
-  useEffect(() => {
-    const id = setInterval(() => setStatusTick(t => t + 1), 8_000);
-    return () => clearInterval(id);
-  }, []);
-
   const plantList = PLANTS.map(p => {
-    const base     = plants[p.id];
-    if (!base) return null;
-    const override = STATUS_SCENARIOS[statusTick % STATUS_SCENARIOS.length][p.id];
-    return override ? { ...base, ...override } : base;
+    const base = plants[p.id];
+    return base ?? null;
   }).filter(Boolean) as PlantState[];
 
   const dayElapsedSecs = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
   const dayElapsedHrs  = (dayElapsedSecs / 3600).toFixed(1);
   const clockStr       = format(now, 'HH:mm:ss');
 
-  const { totalPieces, totalActiveHrs, totalIdleHrs, runningCount } = useMemo(() => ({
-    totalPieces:    plantList.reduce((s, p) => s + (p.total_count ?? 0), 0),
-    totalActiveHrs: parseFloat(
-      (plantList.reduce((s, p) => s + (p.runtime_s ?? 0), 0) / 3600).toFixed(1)
-    ),
-    totalIdleHrs: parseFloat(
-      (plantList.reduce((s, p) => s + (p.idle_s ?? 0), 0) / 3600).toFixed(1)
-    ),
-    runningCount: plantList.filter(p => p.online && p.belt_active).length,
-  }), [plantList]);
+  const { totalPieces, totalActiveStr, totalIdleStr, runningCount } = useMemo(() => {
+    const activeS = plantList.reduce((s, p) => s + (p.runtime_s ?? 0), 0);
+    const idleS   = plantList.reduce((s, p) => s + (p.idle_s   ?? 0), 0);
+    return {
+      totalPieces:    plantList.reduce((s, p) => s + (p.total_count ?? 0), 0),
+      totalActiveStr: `${(activeS / 3600).toFixed(2)}h`,
+      totalIdleStr:   `${(idleS   / 3600).toFixed(2)}h`,
+      runningCount:   plantList.filter(p => p.online && p.belt_active).length,
+    };
+  }, [plantList]);
 
   const exportPDF = useCallback(() => {
     const dateStr  = format(now, 'MMMM d, yyyy');
@@ -336,7 +319,7 @@ export default function FloorView() {
             Total Active Hrs
           </p>
           <p className="text-gray-900 dark:text-white font-black text-3xl tabular-nums leading-none mb-0.5">
-            {totalActiveHrs}h
+            {totalActiveStr}
           </p>
           <p className="text-gray-600 text-xs">combined</p>
         </div>
@@ -345,7 +328,7 @@ export default function FloorView() {
             Total Idle Hrs
           </p>
           <p className="text-gray-900 dark:text-white font-black text-3xl tabular-nums leading-none mb-0.5">
-            {totalIdleHrs}h
+            {totalIdleStr}
           </p>
           <p className="text-gray-600 text-xs">all reasons</p>
         </div>
@@ -366,7 +349,6 @@ export default function FloorView() {
           <PlantCard
             key={p.plant_id}
             plant={p}
-            plantIdx={i}
             dayElapsedSecs={dayElapsedSecs}
             delay={0.05 + i * 0.05}
           />

@@ -2,12 +2,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { WS_URL } from '../lib/constants';
-import { FiVideo, FiVideoOff } from 'react-icons/fi';
+import { FiVideoOff } from 'react-icons/fi';
 import type { WsFrameMessage, WsMessage } from '../types';
 
 interface LiveThumbnailProps {
   plantId: string;
-  previewVideo?: string;
   className?: string;
   onUpdate?: (state: WsFrameMessage) => void;
 }
@@ -16,7 +15,7 @@ interface LiveThumbnailProps {
  * LiveThumbnail — streams annotated JPEG frames from /ws/plant/{plantId}.
  * Falls back to a placeholder when disconnected or no thumbnail yet.
  */
-export default function LiveThumbnail({ plantId, previewVideo, className = "", onUpdate }: LiveThumbnailProps) {
+export default function LiveThumbnail({ plantId, className = "", onUpdate }: LiveThumbnailProps) {
   const [src,      setSrc]      = useState<string | null>(null);
   const [frameAge, setFrameAge] = useState<number | null>(null);
   const ageTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -43,8 +42,6 @@ export default function LiveThumbnail({ plantId, previewVideo, className = "", o
     if (ageTimerRef.current) clearInterval(ageTimerRef.current);
   }, []);
 
-  const previewSrc = previewVideo ?? null;
-
   return (
     <div className={`relative bg-[#0a0a0a] overflow-hidden ${className}`}>
       {src ? (
@@ -54,29 +51,16 @@ export default function LiveThumbnail({ plantId, previewVideo, className = "", o
           alt={`${plantId} live feed`}
           className="w-full h-full object-cover"
         />
-      ) : previewSrc ? (
-        /* Preview video until live feed arrives */
-        <>
-          <video
-            key={previewSrc}
-            src={previewSrc}
-            autoPlay
-            muted
-            loop
-            playsInline
-            className="w-full h-full object-cover"
-          />
-        </>
       ) : (
-        /* Fallback icon for unknown plant IDs */
-        <div className="w-full h-full flex flex-col items-center justify-center gap-2">
-          {connected
-            ? <FiVideo className="w-8 h-8 text-gray-700" />
-            : <FiVideoOff className="w-8 h-8 text-gray-700" />
-          }
-          <span className="text-xs text-gray-600">
-            {connected ? 'Waiting for feed…' : 'Connecting…'}
-          </span>
+        /* No live frame — show placeholder */
+        <div className="w-full h-full flex flex-col items-center justify-center gap-3">
+          <FiVideoOff className="w-10 h-10 text-gray-700" />
+          <div className="text-center">
+            <p className="text-sm font-medium text-gray-500">No Inference Running</p>
+            <p className="text-xs text-gray-600 mt-0.5">
+              {connected ? 'Waiting for feed…' : 'Connecting…'}
+            </p>
+          </div>
         </div>
       )}
 

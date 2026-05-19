@@ -7,7 +7,7 @@ import LiveThumbnail from '../../components/LiveThumbnail';
 import BeltStatusBadge from '../../components/BeltStatusBadge';
 import CounterBadge from '../../components/CounterBadge';
 import { usePlantsData } from '../../hooks/usePlantsData';
-import { PLANTS, PREVIEW_VIDEOS } from '../../lib/constants';
+import { PLANTS } from '../../lib/constants';
 import type { PlantId } from '../../types';
 import { useRouter } from 'next/navigation';
 
@@ -51,7 +51,6 @@ export default function Monitoring() {
                 <div className="relative aspect-video bg-gray-900">
                   <LiveThumbnail
                     plantId={p.id}
-                    previewVideo={PREVIEW_VIDEOS[p.id]}
                     className="absolute inset-0 w-full h-full"
                   />
 
@@ -117,7 +116,6 @@ export default function Monitoring() {
           <div className="relative w-[90%] max-w-5xl aspect-video">
             <LiveThumbnail
               plantId={fullscreen}
-              previewVideo={PREVIEW_VIDEOS[fullscreen]}
               className="w-full h-full rounded-2xl overflow-hidden"
             />
             <div className="absolute top-4 left-4 flex items-center gap-2">

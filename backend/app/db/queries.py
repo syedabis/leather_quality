@@ -184,32 +184,32 @@ def get_plant_states() -> list[dict]:
     from the last seen row (so KPI tiles keep their final value but the live
     Running indicator stops blinking).
     """
+    # Sum ALL of today's hour buckets per unit so runtime/idle accumulate
+    # across hour boundaries. staleness is based on the most-recent write.
     sql = """
         SELECT
             source_note,
-            piece_count,
-            frame_count,
-            uptime_frames,
-            downtime_frames,
-            idle_sessions_count,
-            idle_time_s,
-            sum_utilization,
-            last_updated,
-            hour_start,
-            DATEDIFF(SECOND, last_updated, SYSDATETIME()) AS staleness_s
+            SUM(piece_count)         AS piece_count,
+            SUM(frame_count)         AS frame_count,
+            SUM(uptime_frames)       AS uptime_frames,
+            SUM(downtime_frames)     AS downtime_frames,
+            SUM(idle_sessions_count) AS idle_sessions_count,
+            SUM(idle_time_s)         AS idle_time_s,
+            SUM(sum_utilization)     AS sum_utilization,
+            MAX(last_updated)        AS last_updated,
+            MIN(hour_start)          AS hour_start,
+            DATEDIFF(SECOND, MAX(last_updated), SYSDATETIME()) AS staleness_s
         FROM dbo.CurrentHourMetrics
         WHERE CAST(hour_start AS DATE) = CAST(GETDATE() AS DATE)
+        GROUP BY source_note
     """
 
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute(sql)
-        # Pick the most-recently-updated row per unit (in case multiple hours exist today).
         rows: dict[str, tuple] = {}
         for r in cur.fetchall():
-            existing = rows.get(r[0])
-            if existing is None or r[8] > existing[8]:
-                rows[r[0]] = r
+            rows[r[0]] = r
 
     result = []
     for unit in UNITS:
@@ -242,7 +242,7 @@ def get_plant_states() -> list[dict]:
         is_fresh    = staleness_s is not None and staleness_s <= _FRESH_WINDOW_S
         frame_count = frame_count or 1
         avg_util    = round((uptime_frames or 0) * 100.0 / frame_count, 1)
-        runtime_s   = uptime_frames * (1 / 6)   # approx: frames at ~6fps when active
+        runtime_s   = uptime_frames * (1 / 5)   # approx: frames at TARGET_FPS=5
         # Belt is "active" only when (a) the worker is currently writing AND
         # (b) the cumulative uptime out-pacing downtime in the last hour bucket.
         belt_active = is_fresh and (uptime_frames > downtime_frames)

@@ -7,7 +7,7 @@ import LiveThumbnail from '../../../components/LiveThumbnail';
 import BeltStatusBadge from '../../../components/BeltStatusBadge';
 import CounterBadge from '../../../components/CounterBadge';
 import { usePlantsData } from '../../../hooks/usePlantsData';
-import { PLANTS, fmtDuration, PREVIEW_VIDEOS } from '../../../lib/constants';
+import { PLANTS, fmtDuration } from '../../../lib/constants';
 import { StaggerContainer, StaggerItem } from '../../../components/ui/AnimateIn';
 import type { PlantId } from '../../../types';
 
@@ -62,7 +62,7 @@ export default function PlantDetail() {
         {/* Live feed */}
         <StaggerItem className="col-span-12 lg:col-span-8">
           <div className="glass-card overflow-hidden">
-            <LiveThumbnail plantId={id} previewVideo={PREVIEW_VIDEOS[id]} className="aspect-video w-full" />
+            <LiveThumbnail plantId={id} className="aspect-video w-full" />
           </div>
         </StaggerItem>
 
@@ -74,19 +74,19 @@ export default function PlantDetail() {
             sub="today"
           />
           <StatCard
-            label="Current Session"
-            value={`#${plant?.session_num ?? '--'}`}
-            sub={`${plant?.session_count ?? 0} pieces this session`}
-          />
-          <StatCard
             label="Utilisation"
             value={`${Math.round(plant?.utilization ?? 0)}%`}
-            sub={`Runtime ${fmtDuration(plant?.runtime_s)}`}
+            sub={`Runtime ${(((plant?.runtime_s ?? 0) / 3600)).toFixed(2)}h`}
           />
           <StatCard
-            label="Active Tracks"
-            value={plant?.active_tracks ?? '--'}
-            sub={`${Math.round(plant?.proc_fps ?? 0)} fps processing`}
+            label="Active Time"
+            value={`${((plant?.runtime_s ?? 0) / 3600).toFixed(2)}h`}
+            sub="belt running today"
+          />
+          <StatCard
+            label="Idle Time"
+            value={`${((plant?.idle_s ?? 0) / 3600).toFixed(2)}h`}
+            sub={`${plant?.session_count ?? 0} idle session${(plant?.session_count ?? 0) !== 1 ? 's' : ''}`}
           />
         </StaggerItem>
 
