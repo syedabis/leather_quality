@@ -17,45 +17,39 @@ export default function SignIn() {
   }, [isLoaded, isSignedIn, router]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { signIn, errors, fetchStatus } = useSignIn() as any;
+  const { signIn, setActive } = useSignIn() as any;
 
   const [identifier, setIdentifier] = useState('');
   const [password,   setPassword]   = useState('');
   const [showPw,     setShowPw]     = useState(false);
   const [submitErr,  setSubmitErr]  = useState<string | null>(null);
-
-  const isFetching = fetchStatus === 'fetching';
+  const [isFetching, setIsFetching] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!signIn) return;
     setSubmitErr(null);
+    setIsFetching(true);
 
     try {
-      const { error } = await signIn.password({ identifier, password });
-      if (error) return;
+      const result = await signIn.create({ identifier, password });
 
-      if (signIn.status === 'complete') {
-        await signIn.finalize({
-          navigate: async ({ session }: { session?: { currentTask?: unknown } }) => {
-            if (session?.currentTask) return;
-            window.location.href = '/overview';
-          },
-        });
+      if (result.status === 'complete') {
+        await setActive({ session: result.createdSessionId });
+        router.push('/overview');
       } else {
-        setSubmitErr('Sign-in failed. Please check your credentials and try again.');
+        setSubmitErr('Sign-in incomplete. Please try again.');
       }
-    } catch (err) {
-      setSubmitErr((err as Error).message ?? 'Sign-in failed. Please try again.');
+    } catch (err: unknown) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const clerkErr = (err as any)?.errors?.[0];
+      setSubmitErr(clerkErr?.longMessage || clerkErr?.message || (err as Error).message || 'Sign-in failed. Please try again.');
+    } finally {
+      setIsFetching(false);
     }
   };
 
-  const errorMsg: string | null =
-    submitErr ||
-    errors?.fields?.identifier?.message ||
-    errors?.fields?.password?.message ||
-    errors?.global?.message ||
-    null;
+  const errorMsg: string | null = submitErr;
 
   return (
     <div className="min-h-screen w-full flex items-center justify-center p-4 md:p-6 lg:p-8 relative overflow-hidden bg-gray-900">
