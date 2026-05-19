@@ -3,9 +3,13 @@ Frame processor: Updates CurrentHourMetrics in real-time as frames arrive.
 Implements the hybrid caching strategy for sub-10ms query response times.
 """
 
+import time
 from datetime import datetime
 from typing import Optional
 from app.db.connection import get_connection
+
+_DEADLOCK_RETRIES = 4
+_DEADLOCK_DELAY   = 0.05  # seconds between retries
 
 
 class FrameProcessor:
@@ -36,60 +40,62 @@ class FrameProcessor:
         Returns:
             True if successful, False if failed
         """
-        try:
-            # Calculate hour bucket
-            now = datetime.now()
-            hour_start = now.replace(minute=0, second=0, microsecond=0)
+        now        = datetime.now()
+        hour_start = now.replace(minute=0, second=0, microsecond=0)
+        params_update = (
+            piece_delta,
+            1 if belt_active else 0,
+            0 if belt_active else 1,
+            utilization_pct,
+            frame_time_delta_s if not belt_active else 0,
+            idle_sessions_delta,
+            source_note,
+            hour_start,
+        )
 
-            with get_connection() as conn:
-                cur = conn.cursor()
-
-                # First, ensure row exists
-                cur.execute(
-                    """
-                    IF NOT EXISTS (
-                        SELECT 1 FROM dbo.CurrentHourMetrics
+        for attempt in range(_DEADLOCK_RETRIES):
+            try:
+                with get_connection() as conn:
+                    cur = conn.cursor()
+                    cur.execute(
+                        """
+                        IF NOT EXISTS (
+                            SELECT 1 FROM dbo.CurrentHourMetrics
+                            WHERE source_note = ? AND hour_start = ?
+                        )
+                        INSERT INTO dbo.CurrentHourMetrics (source_note, hour_start)
+                        VALUES (?, ?)
+                        """,
+                        (source_note, hour_start, source_note, hour_start),
+                    )
+                    cur.execute(
+                        """
+                        UPDATE dbo.CurrentHourMetrics
+                        SET
+                            frame_count         = frame_count + 1,
+                            piece_count         = piece_count + ?,
+                            uptime_frames       = uptime_frames + ?,
+                            downtime_frames     = downtime_frames + ?,
+                            sum_utilization     = sum_utilization + ?,
+                            idle_time_s         = idle_time_s + ?,
+                            idle_sessions_count = idle_sessions_count + ?,
+                            last_updated        = GETDATE()
                         WHERE source_note = ? AND hour_start = ?
+                        """,
+                        params_update,
                     )
-                    INSERT INTO dbo.CurrentHourMetrics (source_note, hour_start)
-                    VALUES (?, ?)
-                    """,
-                    (source_note, hour_start, source_note, hour_start)
-                )
+                    conn.commit()
+                    return True
 
-                # Update aggregates
-                cur.execute(
-                    """
-                    UPDATE dbo.CurrentHourMetrics
-                    SET
-                        frame_count = frame_count + 1,
-                        piece_count = piece_count + ?,
-                        uptime_frames = uptime_frames + ?,
-                        downtime_frames = downtime_frames + ?,
-                        sum_utilization = sum_utilization + ?,
-                        idle_time_s = idle_time_s + ?,
-                        idle_sessions_count = idle_sessions_count + ?,
-                        last_updated = GETDATE()
-                    WHERE source_note = ? AND hour_start = ?
-                    """,
-                    (
-                        piece_delta,
-                        1 if belt_active else 0,
-                        0 if belt_active else 1,
-                        utilization_pct,
-                        frame_time_delta_s if not belt_active else 0,
-                        idle_sessions_delta,
-                        source_note,
-                        hour_start
-                    )
-                )
+            except Exception as e:
+                if getattr(e, 'args', None) and e.args[0] == '40001':
+                    if attempt < _DEADLOCK_RETRIES - 1:
+                        time.sleep(_DEADLOCK_DELAY * (attempt + 1))
+                        continue
+                print(f"❌ DB write error: {e}")
+                return False
 
-                conn.commit()
-                return True
-
-        except Exception as e:
-            print(f"❌ Frame processor error: {e}")
-            return False
+        return False
 
     @staticmethod
     def finalize_hour(
