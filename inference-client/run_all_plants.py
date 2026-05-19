@@ -59,21 +59,24 @@ WINDOW_GAP = 4     # pixels between windows
 # ── Plant / DB mapping ─────────────────────────────────────────────────────
 UNITS = ["SP-01", "SP-02", "SP-03", "SP-04", "SP-05", "SP-06"]
 UNIT_MAP = {
-    "SP-01": "SP3", "SP-02": "SP4", "SP-03": "SP5",
-    "SP-04": "SP6", "SP-05": "SP7", "SP-06": "SP8",
+    "SP-01": "SP-01", "SP-02": "SP-02", "SP-03": "SP-03",
+    "SP-04": "SP-04", "SP-05": "SP-05", "SP-06": "SP-06",
 }
 
 # ── Backend frame streaming ────────────────────────────────────────────────
 BACKEND_URL   = os.getenv("BACKEND_URL", "http://localhost:8001").rstrip("/")
-THUMB_EVERY   = 5
-THUMB_QUALITY = 55
-_push_pool    = ThreadPoolExecutor(max_workers=6, thread_name_prefix="frame-push")
+THUMB_EVERY   = 1     # push every processed frame for real-time monitoring
+THUMB_QUALITY = 60
+THUMB_W       = 640   # resize before encoding — cuts payload ~4x vs full res
+THUMB_H       = 360
+_push_pool    = ThreadPoolExecutor(max_workers=4, thread_name_prefix="frame-push")
 
 
 def _push_frame(plant_id: str, frame_bgr) -> None:
     if not BACKEND_URL:
         return
-    ok, buf = cv2.imencode(".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, THUMB_QUALITY])
+    small = cv2.resize(frame_bgr, (THUMB_W, THUMB_H), interpolation=cv2.INTER_LINEAR)
+    ok, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, THUMB_QUALITY])
     if not ok:
         return
     b64 = base64.b64encode(buf.tobytes()).decode()
@@ -410,7 +413,7 @@ def _plant_worker(
 
             frames_pushed += 1
             if frames_pushed % THUMB_EVERY == 0:
-                _push_frame(db_unit, display)
+                _push_frame(unit, display)
 
         cap.release()
 
