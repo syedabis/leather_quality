@@ -48,7 +48,8 @@ CFG_FILE    = BASE / "unit_configs.json"
 # ── Inference config ───────────────────────────────────────────────────────
 TARGET_FPS       = 5
 CONF             = 0.15
-IDLE_TIMEOUT_SEC = 30  # default — overridden at startup from DB SystemSettings
+IDLE_TIMEOUT_SEC        = 30   # default — overridden at startup from DB SystemSettings
+DOWNTIME_THRESHOLD_SEC  = 300  # default — overridden at startup from DB SystemSettings
 
 # ── Display config — 3 columns × 2 rows, each window 640×360 ──────────────
 DISPLAY_W  = 640
@@ -459,10 +460,11 @@ def main() -> None:
         raise FileNotFoundError(f"Model not found: {args.model}")
 
     # Load settings from DB (idle timeout etc.)
-    global IDLE_TIMEOUT_SEC
+    global IDLE_TIMEOUT_SEC, DOWNTIME_THRESHOLD_SEC
     settings = _load_settings()
-    IDLE_TIMEOUT_SEC = int(settings.get("idle_timeout_sec", 30))
-    print(f"[settings] Idle timeout: {IDLE_TIMEOUT_SEC}s")
+    IDLE_TIMEOUT_SEC       = int(settings.get("idle_timeout_sec",       30))
+    DOWNTIME_THRESHOLD_SEC = int(settings.get("downtime_threshold_sec", 300))
+    print(f"[settings] Idle timeout: {IDLE_TIMEOUT_SEC}s | Downtime threshold: {DOWNTIME_THRESHOLD_SEC}s")
 
     if DEVICE == "cpu":
         print("[device] CUDA not available — running on CPU (will be slow for 6 plants).")

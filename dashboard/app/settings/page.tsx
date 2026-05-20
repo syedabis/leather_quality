@@ -30,9 +30,10 @@ export default function Settings() {
   const [errorMsg,  setErrorMsg]  = useState('');
 
   // System settings state
-  const [idleTimeout,     setIdleTimeout]     = useState(30);
-  const [settingsSaving,  setSettingsSaving]  = useState(false);
-  const [settingsStatus,  setSettingsStatus]  = useState<'idle' | 'success' | 'error'>('idle');
+  const [idleTimeout,        setIdleTimeout]        = useState(30);
+  const [downtimeThreshold,  setDowntimeThreshold]  = useState(300);
+  const [settingsSaving,     setSettingsSaving]      = useState(false);
+  const [settingsStatus,     setSettingsStatus]      = useState<'idle' | 'success' | 'error'>('idle');
   const [clearConfirm,    setClearConfirm]    = useState(false);
   const [clearing,        setClearing]        = useState(false);
   const [clearStatus,     setClearStatus]     = useState<'idle' | 'success' | 'error'>('idle');
@@ -44,7 +45,8 @@ export default function Settings() {
     fetch(`${API_URL}/api/settings`)
       .then(r => r.json())
       .then(data => {
-        if (data.idle_timeout_sec) setIdleTimeout(Number(data.idle_timeout_sec));
+        if (data.idle_timeout_sec)        setIdleTimeout(Number(data.idle_timeout_sec));
+        if (data.downtime_threshold_sec)  setDowntimeThreshold(Number(data.downtime_threshold_sec));
       })
       .catch(() => {});
   }, []);
@@ -56,7 +58,7 @@ export default function Settings() {
       const res = await fetch(`${API_URL}/api/settings`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ idle_timeout_sec: idleTimeout }),
+        body: JSON.stringify({ idle_timeout_sec: idleTimeout, downtime_threshold_sec: downtimeThreshold }),
       });
       if (!res.ok) throw new Error('Failed to save');
       setSettingsStatus('success');
@@ -304,27 +306,54 @@ export default function Settings() {
               <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-widest">System Settings</p>
             </div>
 
-            <div className="space-y-4">
+            <div className="space-y-5">
+              {/* Idle Timeout */}
               <div>
                 <label className="block text-xs text-gray-500 font-medium mb-1">
                   Idle Timeout
                   <span className="ml-2 text-[#2AAA8A] font-bold">{idleTimeout}s</span>
                 </label>
                 <p className="text-[11px] text-gray-400 mb-2">
-                  Time with no new piece detections before a plant is marked Idle.
-                  Changes apply on next inference restart.
+                  No new piece detections for this long → plant marked Idle. Changes apply on next inference restart.
                 </p>
                 <input
-                  type="range"
-                  min={5}
-                  max={300}
-                  step={5}
+                  type="range" min={5} max={300} step={5}
                   value={idleTimeout}
                   onChange={e => setIdleTimeout(Number(e.target.value))}
                   className="w-full accent-[#2AAA8A]"
                 />
-                <div className="flex justify-between text-[10px] text-gray-400 mt-1">
-                  <span>5s</span><span>60s</span><span>120s</span><span>300s</span>
+                <div className="relative h-4 mt-0.5">
+                  {([{l:'5s', p:0},{l:'60s', p:18.6},{l:'120s', p:39},{l:'300s', p:100}] as {l:string,p:number}[]).map(({l,p})=>(
+                    <span key={l} className="absolute text-[10px] text-gray-400"
+                      style={{ left:`${p}%`, transform: p===0?'none':p===100?'translateX(-100%)':'translateX(-50%)' }}>
+                      {l}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              {/* Downtime Threshold */}
+              <div>
+                <label className="block text-xs text-gray-500 font-medium mb-1">
+                  Downtime Threshold
+                  <span className="ml-2 text-[#2AAA8A] font-bold">{downtimeThreshold}s</span>
+                </label>
+                <p className="text-[11px] text-gray-400 mb-2">
+                  If a plant stays idle longer than this, it is classified as a Downtime event in reports.
+                </p>
+                <input
+                  type="range" min={30} max={3600} step={30}
+                  value={downtimeThreshold}
+                  onChange={e => setDowntimeThreshold(Number(e.target.value))}
+                  className="w-full accent-[#2AAA8A]"
+                />
+                <div className="relative h-4 mt-0.5">
+                  {([{l:'30s', p:0},{l:'15m', p:24.7},{l:'30m', p:49.6},{l:'1h', p:100}] as {l:string,p:number}[]).map(({l,p})=>(
+                    <span key={l} className="absolute text-[10px] text-gray-400"
+                      style={{ left:`${p}%`, transform: p===0?'none':p===100?'translateX(-100%)':'translateX(-50%)' }}>
+                      {l}
+                    </span>
+                  ))}
                 </div>
               </div>
 

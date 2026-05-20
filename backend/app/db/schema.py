@@ -299,6 +299,8 @@ def create_settings_table():
     seed_sql = """
     IF NOT EXISTS (SELECT 1 FROM dbo.SystemSettings WHERE key = 'idle_timeout_sec')
         INSERT INTO dbo.SystemSettings (key, value) VALUES ('idle_timeout_sec', '30');
+    IF NOT EXISTS (SELECT 1 FROM dbo.SystemSettings WHERE key = 'downtime_threshold_sec')
+        INSERT INTO dbo.SystemSettings (key, value) VALUES ('downtime_threshold_sec', '300');
     """
     with get_connection() as conn:
         conn.execute(sql)
