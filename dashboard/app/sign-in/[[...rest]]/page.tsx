@@ -33,15 +33,17 @@ export default function SignIn() {
     setIsFetching(true);
 
     try {
-      await signIn.create({ strategy: 'password', identifier, password });
+      const result = await signIn.create({ strategy: 'password', identifier, password });
+      const status    = result?.status    ?? signIn.status;
+      const sessionId = result?.createdSessionId ?? signIn.createdSessionId;
 
-      if (signIn.status === 'complete') {
-        await setActive({ session: signIn.createdSessionId });
+      if (status === 'complete') {
+        await setActive({ session: sessionId });
         router.push('/overview');
-      } else if (signIn.status === 'needs_second_factor') {
+      } else if (status === 'needs_second_factor') {
         setSubmitErr('Two-factor authentication is required. Please disable MFA in Clerk dashboard.');
       } else {
-        setSubmitErr(`Sign-in failed (status: ${signIn.status}). Check credentials and try again.`);
+        setSubmitErr(`Sign-in failed (status: ${status}). Check credentials and try again.`);
       }
     } catch (err: unknown) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
