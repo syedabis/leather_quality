@@ -1,8 +1,10 @@
 "use client";
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { useUser } from '@clerk/nextjs';
 import { motion } from 'framer-motion';
-import { FiCamera, FiCheck, FiAlertCircle, FiUser, FiMail, FiShield } from 'react-icons/fi';
+import { FiCamera, FiCheck, FiAlertCircle, FiUser, FiMail, FiShield, FiSliders, FiTrash2 } from 'react-icons/fi';
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8001';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -27,7 +29,60 @@ export default function Settings() {
   const [status,    setStatus]    = useState<'idle' | 'success' | 'error'>('idle');
   const [errorMsg,  setErrorMsg]  = useState('');
 
+  // System settings state
+  const [idleTimeout,     setIdleTimeout]     = useState(30);
+  const [settingsSaving,  setSettingsSaving]  = useState(false);
+  const [settingsStatus,  setSettingsStatus]  = useState<'idle' | 'success' | 'error'>('idle');
+  const [clearConfirm,    setClearConfirm]    = useState(false);
+  const [clearing,        setClearing]        = useState(false);
+  const [clearStatus,     setClearStatus]     = useState<'idle' | 'success' | 'error'>('idle');
+
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Load system settings on mount
+  useEffect(() => {
+    fetch(`${API_URL}/api/settings`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.idle_timeout_sec) setIdleTimeout(Number(data.idle_timeout_sec));
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleSaveSystemSettings = useCallback(async () => {
+    setSettingsSaving(true);
+    setSettingsStatus('idle');
+    try {
+      const res = await fetch(`${API_URL}/api/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idle_timeout_sec: idleTimeout }),
+      });
+      if (!res.ok) throw new Error('Failed to save');
+      setSettingsStatus('success');
+    } catch {
+      setSettingsStatus('error');
+    } finally {
+      setSettingsSaving(false);
+      setTimeout(() => setSettingsStatus('idle'), 3000);
+    }
+  }, [idleTimeout]);
+
+  const handleClearDatabase = useCallback(async () => {
+    setClearing(true);
+    setClearStatus('idle');
+    try {
+      const res = await fetch(`${API_URL}/api/settings/clear-db`, { method: 'POST' });
+      if (!res.ok) throw new Error('Failed to clear');
+      setClearStatus('success');
+      setClearConfirm(false);
+    } catch {
+      setClearStatus('error');
+    } finally {
+      setClearing(false);
+      setTimeout(() => setClearStatus('idle'), 4000);
+    }
+  }, []);
 
   const nameInitials = (user?.firstName?.[0] ?? '') + (user?.lastName?.[0] ?? '');
   const initials = nameInitials || (user?.primaryEmailAddress?.emailAddress?.[0]?.toUpperCase() ?? '?');
@@ -235,6 +290,126 @@ export default function Settings() {
             )}
           </div>
         </motion.div>
+
+        {/* ── System Settings (admin only) ────────────────────────────── */}
+        {role === 'admin' && (
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.18 }}
+            className="bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-2xl p-6 shadow-sm"
+          >
+            <div className="flex items-center gap-2 mb-4">
+              <FiSliders className="w-4 h-4 text-[#2AAA8A]" />
+              <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-widest">System Settings</p>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs text-gray-500 font-medium mb-1">
+                  Idle Timeout
+                  <span className="ml-2 text-[#2AAA8A] font-bold">{idleTimeout}s</span>
+                </label>
+                <p className="text-[11px] text-gray-400 mb-2">
+                  Time with no new piece detections before a plant is marked Idle.
+                  Changes apply on next inference restart.
+                </p>
+                <input
+                  type="range"
+                  min={5}
+                  max={300}
+                  step={5}
+                  value={idleTimeout}
+                  onChange={e => setIdleTimeout(Number(e.target.value))}
+                  className="w-full accent-[#2AAA8A]"
+                />
+                <div className="flex justify-between text-[10px] text-gray-400 mt-1">
+                  <span>5s</span><span>60s</span><span>120s</span><span>300s</span>
+                </div>
+              </div>
+
+              {settingsStatus !== 'idle' && (
+                <div className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium border ${
+                  settingsStatus === 'success'
+                    ? 'bg-green-50 border-green-200 text-green-700'
+                    : 'bg-red-50 border-red-200 text-red-600'
+                }`}>
+                  {settingsStatus === 'success'
+                    ? <><FiCheck className="w-3.5 h-3.5" /> Settings saved</>
+                    : <><FiAlertCircle className="w-3.5 h-3.5" /> Failed to save</>}
+                </div>
+              )}
+
+              <button
+                onClick={handleSaveSystemSettings}
+                disabled={settingsSaving}
+                className="px-5 py-2 bg-[#2AAA8A] hover:bg-[#249978] text-white text-xs font-semibold rounded-xl
+                  disabled:opacity-60 disabled:cursor-not-allowed transition-all shadow-sm"
+              >
+                {settingsSaving ? 'Saving…' : 'Save Settings'}
+              </button>
+            </div>
+          </motion.div>
+        )}
+
+        {/* ── Database Management (admin only) ─────────────────────────── */}
+        {role === 'admin' && (
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.22 }}
+            className="bg-white dark:bg-[#1a1a1a] border border-red-100 dark:border-red-900/30 rounded-2xl p-6 shadow-sm"
+          >
+            <div className="flex items-center gap-2 mb-4">
+              <FiTrash2 className="w-4 h-4 text-red-500" />
+              <p className="text-xs font-semibold text-red-400 uppercase tracking-widest">Database Management</p>
+            </div>
+
+            <p className="text-xs text-gray-500 mb-4">
+              Permanently deletes all piece count, metrics, sessions, and idle period data.
+              This cannot be undone.
+            </p>
+
+            {clearStatus !== 'idle' && (
+              <div className={`flex items-center gap-2 px-3 py-2 mb-3 rounded-xl text-xs font-medium border ${
+                clearStatus === 'success'
+                  ? 'bg-green-50 border-green-200 text-green-700'
+                  : 'bg-red-50 border-red-200 text-red-600'
+              }`}>
+                {clearStatus === 'success'
+                  ? <><FiCheck className="w-3.5 h-3.5" /> Database cleared successfully</>
+                  : <><FiAlertCircle className="w-3.5 h-3.5" /> Failed to clear database</>}
+              </div>
+            )}
+
+            {!clearConfirm ? (
+              <button
+                onClick={() => setClearConfirm(true)}
+                className="px-5 py-2 border border-red-200 text-red-500 hover:bg-red-50 text-xs font-semibold rounded-xl transition-all"
+              >
+                Clear Database
+              </button>
+            ) : (
+              <div className="flex items-center gap-3 p-3 bg-red-50 dark:bg-red-900/20 rounded-xl border border-red-200 dark:border-red-800">
+                <p className="text-xs text-red-600 font-medium flex-1">Are you sure? All data will be lost.</p>
+                <button
+                  onClick={() => setClearConfirm(false)}
+                  className="px-3 py-1.5 text-xs text-gray-500 hover:text-gray-700 font-medium rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleClearDatabase}
+                  disabled={clearing}
+                  className="px-4 py-1.5 bg-red-500 hover:bg-red-600 text-white text-xs font-semibold rounded-lg
+                    disabled:opacity-60 transition-all"
+                >
+                  {clearing ? 'Clearing…' : 'Yes, Clear All'}
+                </button>
+              </div>
+            )}
+          </motion.div>
+        )}
 
         {/* ── Status feedback ──────────────────────────────────────────── */}
         {status !== 'idle' && (

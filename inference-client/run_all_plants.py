@@ -48,7 +48,7 @@ CFG_FILE    = BASE / "unit_configs.json"
 # ── Inference config ───────────────────────────────────────────────────────
 TARGET_FPS       = 5
 CONF             = 0.15
-IDLE_TIMEOUT_SEC = 30
+IDLE_TIMEOUT_SEC = 30  # default — overridden at startup from DB SystemSettings
 
 # ── Display config — 3 columns × 2 rows, each window 640×360 ──────────────
 DISPLAY_W  = 640
@@ -92,6 +92,23 @@ def _push_frame(plant_id: str, frame_bgr) -> None:
             pass
 
     _push_pool.submit(_post)
+
+
+# ── Settings helpers ──────────────────────────────────────────────────────
+
+def _load_settings() -> dict:
+    """Read SystemSettings from DB. Falls back to defaults on any error."""
+    defaults = {"idle_timeout_sec": 30}
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT key, value FROM dbo.SystemSettings")
+            rows = cur.fetchall()
+            if rows:
+                return {r[0]: r[1] for r in rows}
+    except Exception as e:
+        print(f"[settings] Could not read from DB, using defaults: {e}")
+    return defaults
 
 
 # ── Config helpers (identical to run_live_preview.py) ─────────────────────
@@ -440,6 +457,12 @@ def main() -> None:
 
     if not args.model.exists():
         raise FileNotFoundError(f"Model not found: {args.model}")
+
+    # Load settings from DB (idle timeout etc.)
+    global IDLE_TIMEOUT_SEC
+    settings = _load_settings()
+    IDLE_TIMEOUT_SEC = int(settings.get("idle_timeout_sec", 30))
+    print(f"[settings] Idle timeout: {IDLE_TIMEOUT_SEC}s")
 
     if DEVICE == "cpu":
         print("[device] CUDA not available — running on CPU (will be slow for 6 plants).")

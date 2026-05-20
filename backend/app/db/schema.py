@@ -286,6 +286,27 @@ def create_sp_analytics_by_shift():
         conn.commit()
 
 
+def create_settings_table():
+    """Create SystemSettings table and seed defaults."""
+    sql = """
+    IF OBJECT_ID('dbo.SystemSettings', 'U') IS NULL
+    CREATE TABLE dbo.SystemSettings (
+        key VARCHAR(50) PRIMARY KEY,
+        value VARCHAR(255) NOT NULL,
+        updated_at DATETIME2 DEFAULT GETDATE()
+    );
+    """
+    seed_sql = """
+    IF NOT EXISTS (SELECT 1 FROM dbo.SystemSettings WHERE key = 'idle_timeout_sec')
+        INSERT INTO dbo.SystemSettings (key, value) VALUES ('idle_timeout_sec', '30');
+    """
+    with get_connection() as conn:
+        conn.execute(sql)
+        conn.commit()
+        conn.execute(seed_sql)
+        conn.commit()
+
+
 def _schema_exists() -> bool:
     """Returns True if the core tables already exist in the database."""
     sql = """
@@ -309,6 +330,7 @@ def initialize_schema():
             create_sp_analytics_by_hour()
             create_sp_analytics_by_day()
             create_sp_analytics_by_shift()
+            create_settings_table()
             print("✅ Stored procedures refreshed.")
             return
 
@@ -320,6 +342,7 @@ def initialize_schema():
         create_sp_analytics_by_hour()
         create_sp_analytics_by_day()
         create_sp_analytics_by_shift()
+        create_settings_table()
         print("✅ Schema initialization complete!")
     except Exception as e:
         print(f"❌ Schema initialization failed: {e}")
