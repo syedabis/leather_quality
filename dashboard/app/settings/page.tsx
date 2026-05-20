@@ -364,8 +364,8 @@ export default function Settings() {
                     : 'bg-red-50 border-red-200 text-red-600'
                 }`}>
                   {settingsStatus === 'success'
-                    ? <><FiCheck className="w-3.5 h-3.5" /> Settings saved</>
-                    : <><FiAlertCircle className="w-3.5 h-3.5" /> Failed to save</>}
+                    ? <><FiCheck className="w-3.5 h-3.5" /> Settings saved — changes will take effect on next inference restart</>
+                    : <><FiAlertCircle className="w-3.5 h-3.5" /> Failed to save settings</>}
                 </div>
               )}
 
