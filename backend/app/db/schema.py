@@ -306,16 +306,16 @@ def create_settings_table():
     sql = """
     IF OBJECT_ID('dbo.SystemSettings', 'U') IS NULL
     CREATE TABLE dbo.SystemSettings (
-        key VARCHAR(50) PRIMARY KEY,
-        value VARCHAR(255) NOT NULL,
+        setting_key VARCHAR(50) PRIMARY KEY,
+        setting_value VARCHAR(255) NOT NULL,
         updated_at DATETIME2 DEFAULT GETDATE()
     );
     """
     seed_sql = """
-    IF NOT EXISTS (SELECT 1 FROM dbo.SystemSettings WHERE key = 'idle_timeout_sec')
-        INSERT INTO dbo.SystemSettings (key, value) VALUES ('idle_timeout_sec', '30');
-    IF NOT EXISTS (SELECT 1 FROM dbo.SystemSettings WHERE key = 'downtime_threshold_sec')
-        INSERT INTO dbo.SystemSettings (key, value) VALUES ('downtime_threshold_sec', '300');
+    IF NOT EXISTS (SELECT 1 FROM dbo.SystemSettings WHERE setting_key = 'idle_timeout_sec')
+        INSERT INTO dbo.SystemSettings (setting_key, setting_value) VALUES ('idle_timeout_sec', '30');
+    IF NOT EXISTS (SELECT 1 FROM dbo.SystemSettings WHERE setting_key = 'downtime_threshold_sec')
+        INSERT INTO dbo.SystemSettings (setting_key, setting_value) VALUES ('downtime_threshold_sec', '300');
     """
     with get_connection() as conn:
         conn.execute(sql)

@@ -103,7 +103,7 @@ def _load_settings() -> dict:
     try:
         with get_connection() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT key, value FROM dbo.SystemSettings")
+            cur.execute("SELECT setting_key, setting_value FROM dbo.SystemSettings")
             rows = cur.fetchall()
             if rows:
                 return {r[0]: r[1] for r in rows}

@@ -24,7 +24,7 @@ def get_settings():
     try:
         with get_connection() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT key, value FROM dbo.SystemSettings")
+            cur.execute("SELECT setting_key, setting_value FROM dbo.SystemSettings")
             rows = cur.fetchall()
             return {row[0]: row[1] for row in rows}
     except Exception as e:
@@ -34,21 +34,24 @@ def get_settings():
 @router.put("")
 def update_settings(body: SettingsUpdate):
     updates = [
-        ("idle_timeout_sec",      str(body.idle_timeout_sec)),
+        ("idle_timeout_sec",       str(body.idle_timeout_sec)),
         ("downtime_threshold_sec", str(body.downtime_threshold_sec)),
     ]
     try:
         with get_connection() as conn:
             cur = conn.cursor()
-            for key, value in updates:
+            for skey, svalue in updates:
                 cur.execute(
                     """
                     MERGE dbo.SystemSettings AS target
-                    USING (SELECT ? AS key, ? AS value) AS src ON target.key = src.key
-                    WHEN MATCHED THEN UPDATE SET value = src.value, updated_at = GETDATE()
-                    WHEN NOT MATCHED THEN INSERT (key, value) VALUES (src.key, src.value);
+                    USING (SELECT ? AS setting_key, ? AS setting_value) AS src
+                        ON target.setting_key = src.setting_key
+                    WHEN MATCHED THEN
+                        UPDATE SET setting_value = src.setting_value, updated_at = GETDATE()
+                    WHEN NOT MATCHED THEN
+                        INSERT (setting_key, setting_value) VALUES (src.setting_key, src.setting_value);
                     """,
-                    (key, value),
+                    (skey, svalue),
                 )
             conn.commit()
         return {"status": "ok", **dict(updates)}
