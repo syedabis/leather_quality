@@ -6,7 +6,7 @@ const isPublicRoute = createRouteMatcher([
   '/sign-in(.*)',
 ]);
 
-export default clerkMiddleware(
+export const proxy = clerkMiddleware(
   async (auth, req) => {
     try {
       const { userId } = await auth();
