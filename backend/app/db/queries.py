@@ -199,8 +199,15 @@ def get_plant_states() -> list[dict]:
             MAX(last_updated)        AS last_updated,
             MIN(hour_start)          AS hour_start,
             DATEDIFF(SECOND, MAX(last_updated), SYSDATETIME()) AS staleness_s,
-            MAX(CAST(last_belt_active AS INT))                  AS last_belt_active
-        FROM dbo.CurrentHourMetrics
+            (SELECT TOP 1 uptime_frames   FROM dbo.CurrentHourMetrics c2
+             WHERE c2.source_note = c.source_note
+               AND CAST(c2.hour_start AS DATE) = CAST(GETDATE() AS DATE)
+             ORDER BY c2.last_updated DESC) AS cur_uptime,
+            (SELECT TOP 1 downtime_frames FROM dbo.CurrentHourMetrics c2
+             WHERE c2.source_note = c.source_note
+               AND CAST(c2.hour_start AS DATE) = CAST(GETDATE() AS DATE)
+             ORDER BY c2.last_updated DESC) AS cur_downtime
+        FROM dbo.CurrentHourMetrics c
         WHERE CAST(hour_start AS DATE) = CAST(GETDATE() AS DATE)
         GROUP BY source_note
     """
@@ -238,14 +245,14 @@ def get_plant_states() -> list[dict]:
 
         (_, piece_count, frame_count, uptime_frames, downtime_frames,
          idle_sessions, idle_time_s, sum_util, _last_updated, _hour_start,
-         staleness_s, last_belt_active) = row
+         staleness_s, cur_uptime, cur_downtime) = row
 
         is_fresh    = staleness_s is not None and staleness_s <= _FRESH_WINDOW_S
         frame_count = frame_count or 1
         avg_util    = round((uptime_frames or 0) * 100.0 / frame_count, 1)
         runtime_s   = uptime_frames * (1 / 5)   # approx: frames at TARGET_FPS=5
-        # Belt is "active" only when fresh AND the most recent frame had belt_active=True
-        belt_active = is_fresh and bool(last_belt_active)
+        # Belt is active if fresh AND more uptime than downtime frames in the current hour
+        belt_active = is_fresh and (cur_uptime or 0) > (cur_downtime or 0)
 
         result.append({
             "type":          "frame",
