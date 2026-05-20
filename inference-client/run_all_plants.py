@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import ctypes
 import json
 import os
 import queue
@@ -51,11 +52,36 @@ CONF             = 0.15
 IDLE_TIMEOUT_SEC        = 30   # default — overridden at startup from DB SystemSettings
 DOWNTIME_THRESHOLD_SEC  = 300  # default — overridden at startup from DB SystemSettings
 
-# ── Display config — 3 columns × 2 rows, each window 640×360 ──────────────
-DISPLAY_W  = 640
-DISPLAY_H  = 360
+# ── Display config — calculated dynamically from screen resolution ─────────
 GRID_COLS  = 3
-WINDOW_GAP = 4     # pixels between windows
+GRID_ROWS  = 2
+WINDOW_GAP = 4
+DISPLAY_W  = 640   # overridden at startup by _calc_window_size()
+DISPLAY_H  = 360   # overridden at startup by _calc_window_size()
+
+
+def _get_screen_size() -> tuple[int, int]:
+    """Return physical screen width/height in pixels, DPI-aware."""
+    try:
+        user32 = ctypes.windll.user32
+        user32.SetProcessDPIAware()
+        return user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+    except Exception:
+        return 1920, 1080
+
+
+def _calc_window_size() -> tuple[int, int]:
+    """Calculate per-window size so all 6 fit on screen with gaps."""
+    sw, sh = _get_screen_size()
+    # Reserve ~50px for taskbar and a small top margin
+    usable_w = sw - WINDOW_GAP * (GRID_COLS + 1)
+    usable_h = sh - 50 - WINDOW_GAP * (GRID_ROWS + 1)
+    w = usable_w // GRID_COLS
+    h = usable_h // GRID_ROWS
+    # Clamp to reasonable bounds
+    w = max(320, min(w, 960))
+    h = max(180, min(h, 540))
+    return w, h
 
 # ── Plant / DB mapping ─────────────────────────────────────────────────────
 UNITS = ["SP-01", "SP-02", "SP-03", "SP-04", "SP-05", "SP-06"]
@@ -460,11 +486,15 @@ def main() -> None:
         raise FileNotFoundError(f"Model not found: {args.model}")
 
     # Load settings from DB (idle timeout etc.)
-    global IDLE_TIMEOUT_SEC, DOWNTIME_THRESHOLD_SEC
+    global IDLE_TIMEOUT_SEC, DOWNTIME_THRESHOLD_SEC, DISPLAY_W, DISPLAY_H
     settings = _load_settings()
     IDLE_TIMEOUT_SEC       = int(settings.get("idle_timeout_sec",       30))
     DOWNTIME_THRESHOLD_SEC = int(settings.get("downtime_threshold_sec", 300))
     print(f"[settings] Idle timeout: {IDLE_TIMEOUT_SEC}s | Downtime threshold: {DOWNTIME_THRESHOLD_SEC}s")
+
+    DISPLAY_W, DISPLAY_H = _calc_window_size()
+    sw, sh = _get_screen_size()
+    print(f"[display]  Screen {sw}x{sh} → window {DISPLAY_W}x{DISPLAY_H} ({GRID_COLS}x{GRID_ROWS} grid)")
 
     if DEVICE == "cpu":
         print("[device] CUDA not available — running on CPU (will be slow for 6 plants).")
