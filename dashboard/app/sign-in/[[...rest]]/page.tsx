@@ -1,20 +1,18 @@
 "use client";
 import { useAuth, useSignIn, useClerk } from '@clerk/nextjs';
-import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { FiAlertCircle } from 'react-icons/fi';
 import { Eye, EyeOff } from 'lucide-react';
 
 export default function SignIn() {
   const { isSignedIn, isLoaded } = useAuth();
-  const router = useRouter();
 
   // Redirect to /overview if already signed in
   useEffect(() => {
     if (isLoaded && isSignedIn) {
-      router.replace('/overview');
+      window.location.href = '/overview';
     }
-  }, [isLoaded, isSignedIn, router]);
+  }, [isLoaded, isSignedIn]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { signIn } = useSignIn() as any;
@@ -32,14 +30,25 @@ export default function SignIn() {
     setSubmitErr(null);
     setIsFetching(true);
 
+    if (!identifier.trim()) {
+      setSubmitErr('Please enter your email address.');
+      setIsFetching(false);
+      return;
+    }
+    if (!password) {
+      setSubmitErr('Please enter your password.');
+      setIsFetching(false);
+      return;
+    }
+
     try {
-      const result = await signIn.create({ strategy: 'password', identifier, password });
+      const result = await signIn.create({ strategy: 'password', identifier: identifier.trim(), password });
       const status    = result?.status    ?? signIn.status;
       const sessionId = result?.createdSessionId ?? signIn.createdSessionId;
 
       if (status === 'complete') {
         await setActive({ session: sessionId });
-        router.push('/overview');
+        window.location.href = '/overview';
       } else if (status === 'needs_second_factor') {
         setSubmitErr('Two-factor authentication is required. Please disable MFA in Clerk dashboard.');
       } else {
