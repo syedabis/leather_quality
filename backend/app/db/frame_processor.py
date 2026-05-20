@@ -49,6 +49,7 @@ class FrameProcessor:
             utilization_pct,
             frame_time_delta_s if not belt_active else 0,
             idle_sessions_delta,
+            1 if belt_active else 0,
             source_note,
             hour_start,
         )
@@ -79,6 +80,7 @@ class FrameProcessor:
                             sum_utilization     = sum_utilization + ?,
                             idle_time_s         = idle_time_s + ?,
                             idle_sessions_count = idle_sessions_count + ?,
+                            last_belt_active    = ?,
                             last_updated        = GETDATE()
                         WHERE source_note = ? AND hour_start = ?
                         """,

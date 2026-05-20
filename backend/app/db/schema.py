@@ -37,6 +37,7 @@ def create_current_hour_metrics_table():
 
         -- Metadata
         last_updated DATETIME2 DEFAULT GETDATE(),
+        last_belt_active BIT DEFAULT 0,
 
         UNIQUE (source_note, hour_start)
     );
@@ -286,6 +287,20 @@ def create_sp_analytics_by_shift():
         conn.commit()
 
 
+def migrate_add_last_belt_active():
+    """Add last_belt_active column to CurrentHourMetrics if missing."""
+    sql = """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('dbo.CurrentHourMetrics') AND name = 'last_belt_active'
+    )
+    ALTER TABLE dbo.CurrentHourMetrics ADD last_belt_active BIT DEFAULT 0;
+    """
+    with get_connection() as conn:
+        conn.execute(sql)
+        conn.commit()
+
+
 def create_settings_table():
     """Create SystemSettings table and seed defaults."""
     sql = """
@@ -333,6 +348,7 @@ def initialize_schema():
             create_sp_analytics_by_day()
             create_sp_analytics_by_shift()
             create_settings_table()
+            migrate_add_last_belt_active()
             print("✅ Stored procedures refreshed.")
             return
 

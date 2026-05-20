@@ -198,7 +198,8 @@ def get_plant_states() -> list[dict]:
             SUM(sum_utilization)     AS sum_utilization,
             MAX(last_updated)        AS last_updated,
             MIN(hour_start)          AS hour_start,
-            DATEDIFF(SECOND, MAX(last_updated), SYSDATETIME()) AS staleness_s
+            DATEDIFF(SECOND, MAX(last_updated), SYSDATETIME()) AS staleness_s,
+            MAX(CAST(last_belt_active AS INT))                  AS last_belt_active
         FROM dbo.CurrentHourMetrics
         WHERE CAST(hour_start AS DATE) = CAST(GETDATE() AS DATE)
         GROUP BY source_note
@@ -237,15 +238,14 @@ def get_plant_states() -> list[dict]:
 
         (_, piece_count, frame_count, uptime_frames, downtime_frames,
          idle_sessions, idle_time_s, sum_util, _last_updated, _hour_start,
-         staleness_s) = row
+         staleness_s, last_belt_active) = row
 
         is_fresh    = staleness_s is not None and staleness_s <= _FRESH_WINDOW_S
         frame_count = frame_count or 1
         avg_util    = round((uptime_frames or 0) * 100.0 / frame_count, 1)
         runtime_s   = uptime_frames * (1 / 5)   # approx: frames at TARGET_FPS=5
-        # Belt is "active" only when (a) the worker is currently writing AND
-        # (b) the cumulative uptime out-pacing downtime in the last hour bucket.
-        belt_active = is_fresh and (uptime_frames > downtime_frames)
+        # Belt is "active" only when fresh AND the most recent frame had belt_active=True
+        belt_active = is_fresh and bool(last_belt_active)
 
         result.append({
             "type":          "frame",
