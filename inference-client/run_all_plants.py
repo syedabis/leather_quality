@@ -211,7 +211,7 @@ def _in_roi(cx: float, cy: float, roi: dict) -> bool:
 # ── Tracker & counter (per-plant instances) ────────────────────────────────
 
 class SimpleIoUTracker:
-    def __init__(self, iou_thresh: float = 0.25, max_age: int = 5):
+    def __init__(self, iou_thresh: float = 0.25, max_age: int = 20):
         self.iou_thresh = iou_thresh
         self.max_age    = max_age
         self._next_id   = 1
