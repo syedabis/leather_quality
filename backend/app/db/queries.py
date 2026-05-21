@@ -199,14 +199,18 @@ def get_plant_states() -> list[dict]:
             MAX(last_updated)        AS last_updated,
             MIN(hour_start)          AS hour_start,
             DATEDIFF(SECOND, MAX(last_updated), SYSDATETIME()) AS staleness_s,
-            (SELECT TOP 1 uptime_frames   FROM dbo.CurrentHourMetrics c2
+            (SELECT TOP 1 uptime_frames    FROM dbo.CurrentHourMetrics c2
              WHERE c2.source_note = c.source_note
                AND CAST(c2.hour_start AS DATE) = CAST(GETDATE() AS DATE)
              ORDER BY c2.last_updated DESC) AS cur_uptime,
-            (SELECT TOP 1 downtime_frames FROM dbo.CurrentHourMetrics c2
+            (SELECT TOP 1 downtime_frames  FROM dbo.CurrentHourMetrics c2
              WHERE c2.source_note = c.source_note
                AND CAST(c2.hour_start AS DATE) = CAST(GETDATE() AS DATE)
-             ORDER BY c2.last_updated DESC) AS cur_downtime
+             ORDER BY c2.last_updated DESC) AS cur_downtime,
+            (SELECT TOP 1 last_belt_active FROM dbo.CurrentHourMetrics c2
+             WHERE c2.source_note = c.source_note
+               AND CAST(c2.hour_start AS DATE) = CAST(GETDATE() AS DATE)
+             ORDER BY c2.last_updated DESC) AS cur_belt_active
         FROM dbo.CurrentHourMetrics c
         WHERE CAST(hour_start AS DATE) = CAST(GETDATE() AS DATE)
         GROUP BY source_note
@@ -245,17 +249,16 @@ def get_plant_states() -> list[dict]:
 
         (_, piece_count, frame_count, uptime_frames, downtime_frames,
          idle_sessions, idle_time_s, sum_util, _last_updated, _hour_start,
-         staleness_s, cur_uptime, cur_downtime) = row
+         staleness_s, cur_uptime, cur_downtime, cur_belt_active) = row
 
         is_fresh    = staleness_s is not None and staleness_s <= _FRESH_WINDOW_S
         frame_count = frame_count or 1
-        # Use current-hour uptime ratio for live utilization display — daily average
-        # is artificially low because overnight idle frames dilute the percentage.
+        # Use current-hour uptime ratio for utilization display
         cur_total   = (cur_uptime or 0) + (cur_downtime or 0)
         avg_util    = round((cur_uptime or 0) * 100.0 / cur_total, 1) if cur_total > 0 else 0.0
         runtime_s   = uptime_frames * (1 / 5)   # approx: frames at TARGET_FPS=5
-        # Belt is active if fresh AND more uptime than downtime frames in the current hour
-        belt_active = is_fresh and (cur_uptime or 0) > (cur_downtime or 0)
+        # Belt is active if fresh AND last written frame says belt was active
+        belt_active = is_fresh and bool(cur_belt_active)
 
         result.append({
             "type":          "frame",
