@@ -329,6 +329,10 @@ def create_settings_table():
         INSERT INTO dbo.SystemSettings (setting_key, setting_value) VALUES ('idle_timeout_sec', '30');
     IF NOT EXISTS (SELECT 1 FROM dbo.SystemSettings WHERE setting_key = 'downtime_threshold_sec')
         INSERT INTO dbo.SystemSettings (setting_key, setting_value) VALUES ('downtime_threshold_sec', '300');
+    IF NOT EXISTS (SELECT 1 FROM dbo.SystemSettings WHERE setting_key = 'shift_start')
+        INSERT INTO dbo.SystemSettings (setting_key, setting_value) VALUES ('shift_start', '07:00');
+    IF NOT EXISTS (SELECT 1 FROM dbo.SystemSettings WHERE setting_key = 'shift_end')
+        INSERT INTO dbo.SystemSettings (setting_key, setting_value) VALUES ('shift_end', '17:00');
     """
     with get_connection() as conn:
         conn.execute(sql)
