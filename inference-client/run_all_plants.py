@@ -371,8 +371,10 @@ def _plant_worker(
             total_count += piece_delta
 
             # ── Belt idle / active state ───────────────────────────────────
+            # Only reset the idle timer when a NEW piece enters the ROI.
+            # A stationary piece already counted does not reset the timer.
             time_since_new = time.time() - last_detection_time
-            if len(roi_ids) > 0:
+            if len(counted_ids_now) > 0:
                 last_detection_time = time.time()
                 belt_active         = True
                 dynamic_frame_skip  = frame_skip

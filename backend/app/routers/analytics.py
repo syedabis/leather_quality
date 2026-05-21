@@ -3,9 +3,12 @@ Analytics endpoints for real-time aggregated data.
 Uses hybrid caching with CurrentHourMetrics + HourlyMetrics for sub-10ms responses.
 """
 
+import logging
 from fastapi import APIRouter, HTTPException, Query
 from datetime import date, datetime, timedelta
 from app.db.connection import get_connection
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 
@@ -42,6 +45,7 @@ def analytics_by_hour(
             })
         return result
     except Exception as exc:
+        logger.error("by-hour failed unit=%s date=%s: %s", unit, date_param, exc, exc_info=True)
         raise HTTPException(status_code=503, detail=str(exc))
 
 
@@ -82,6 +86,7 @@ def analytics_by_day(
             })
         return result
     except Exception as exc:
+        logger.error("by-day failed from=%s to=%s unit=%s: %s", from_date, to_date, unit, exc, exc_info=True)
         raise HTTPException(status_code=503, detail=str(exc))
 
 
