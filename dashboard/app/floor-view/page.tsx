@@ -220,13 +220,12 @@ export default function FloorView() {
   const clockStr       = format(now, 'HH:mm:ss');
 
   const { totalPieces, totalActiveStr, totalIdleStr, runningCount } = useMemo(() => {
-    const n       = plantList.length || 1;
     const activeS = plantList.reduce((s, p) => s + (p.runtime_s ?? 0), 0);
     const idleS   = plantList.reduce((s, p) => s + (p.idle_s   ?? 0), 0);
     return {
       totalPieces:    plantList.reduce((s, p) => s + (p.total_count ?? 0), 0),
-      totalActiveStr: fmtDuration(Math.round(activeS / n)),
-      totalIdleStr:   fmtDuration(Math.round(idleS   / n)),
+      totalActiveStr: fmtDuration(activeS),
+      totalIdleStr:   fmtDuration(idleS),
       runningCount:   plantList.filter(p => p.online && p.belt_active).length,
     };
   }, [plantList]);
@@ -317,16 +316,16 @@ export default function FloorView() {
         </div>
         <div>
           <p className="text-gray-600 text-[10px] font-semibold uppercase tracking-[0.15em] mb-1">
-            Avg Active / Plant
+            Total Active Hrs
           </p>
           <p className="text-gray-900 dark:text-white font-black text-3xl tabular-nums leading-none mb-0.5">
             {totalActiveStr}
           </p>
-          <p className="text-gray-600 text-xs">per plant avg</p>
+          <p className="text-gray-600 text-xs">combined</p>
         </div>
         <div>
           <p className="text-gray-600 text-[10px] font-semibold uppercase tracking-[0.15em] mb-1">
-            Avg Idle / Plant
+            Total Idle Hrs
           </p>
           <p className="text-gray-900 dark:text-white font-black text-3xl tabular-nums leading-none mb-0.5">
             {totalIdleStr}
