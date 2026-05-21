@@ -32,6 +32,8 @@ export default function Settings() {
   // System settings state
   const [idleTimeout,        setIdleTimeout]        = useState(30);
   const [downtimeThreshold,  setDowntimeThreshold]  = useState(300);
+  const [shiftStart,         setShiftStart]         = useState('07:00');
+  const [shiftEnd,           setShiftEnd]           = useState('17:00');
   const [settingsSaving,     setSettingsSaving]      = useState(false);
   const [settingsStatus,     setSettingsStatus]      = useState<'idle' | 'success' | 'error'>('idle');
   const [clearConfirm,    setClearConfirm]    = useState(false);
@@ -47,6 +49,8 @@ export default function Settings() {
       .then(data => {
         if (data.idle_timeout_sec)        setIdleTimeout(Number(data.idle_timeout_sec));
         if (data.downtime_threshold_sec)  setDowntimeThreshold(Number(data.downtime_threshold_sec));
+        if (data.shift_start)             setShiftStart(data.shift_start);
+        if (data.shift_end)               setShiftEnd(data.shift_end);
       })
       .catch(() => {});
   }, []);
@@ -58,7 +62,7 @@ export default function Settings() {
       const res = await fetch(`${API_URL}/api/settings`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ idle_timeout_sec: idleTimeout, downtime_threshold_sec: downtimeThreshold }),
+        body: JSON.stringify({ idle_timeout_sec: idleTimeout, downtime_threshold_sec: downtimeThreshold, shift_start: shiftStart, shift_end: shiftEnd }),
       });
       if (!res.ok) throw new Error('Failed to save');
       setSettingsStatus('success');
@@ -354,6 +358,36 @@ export default function Settings() {
                       {l}
                     </span>
                   ))}
+                </div>
+              </div>
+
+              {/* Shift Hours */}
+              <div>
+                <label className="block text-xs text-gray-500 font-medium mb-1">Shift Hours</label>
+                <p className="text-[11px] text-gray-400 mb-2">
+                  Idle time and downtime are only counted within these hours. Outside shift, the system monitors but does not record idle/downtime.
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[10px] text-gray-400 mb-1">Shift Start</label>
+                    <input
+                      type="time"
+                      value={shiftStart}
+                      onChange={e => setShiftStart(e.target.value)}
+                      className="w-full px-3 py-2 text-sm bg-gray-50 dark:bg-[#111111] border border-gray-200 dark:border-[#2c2c2c] rounded-xl
+                        text-gray-900 dark:text-white focus:outline-none focus:border-[#2AAA8A] transition-all"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-gray-400 mb-1">Shift End</label>
+                    <input
+                      type="time"
+                      value={shiftEnd}
+                      onChange={e => setShiftEnd(e.target.value)}
+                      className="w-full px-3 py-2 text-sm bg-gray-50 dark:bg-[#111111] border border-gray-200 dark:border-[#2c2c2c] rounded-xl
+                        text-gray-900 dark:text-white focus:outline-none focus:border-[#2AAA8A] transition-all"
+                    />
+                  </div>
                 </div>
               </div>
 

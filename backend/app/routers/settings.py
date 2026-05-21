@@ -17,6 +17,8 @@ CLEARABLE_TABLES = [
 class SettingsUpdate(BaseModel):
     idle_timeout_sec: int = Field(..., ge=5, le=3600)
     downtime_threshold_sec: int = Field(..., ge=30, le=7200)
+    shift_start: str = Field("07:00")
+    shift_end: str = Field("17:00")
 
 
 @router.get("")
@@ -36,6 +38,8 @@ def update_settings(body: SettingsUpdate):
     updates = [
         ("idle_timeout_sec",       str(body.idle_timeout_sec)),
         ("downtime_threshold_sec", str(body.downtime_threshold_sec)),
+        ("shift_start",            body.shift_start),
+        ("shift_end",              body.shift_end),
     ]
     try:
         with get_connection() as conn:
