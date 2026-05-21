@@ -283,6 +283,28 @@ export default function Overview() {
           chartData = Object.entries(buckets)
             .sort(([a], [b]) => Number(a) - Number(b))
             .map(([, b]) => finalize(b));
+
+          // Convert idle metrics to running totals so the line rises through the day
+          // instead of falling (per-hour idle is high overnight, low when plants run).
+          let runIdleSess = 0;
+          let runIdleTime = 0;
+          const runIdleSessP: Record<string, number> = {};
+          const runIdleTimeP: Record<string, number> = {};
+          chartData = chartData.map(row => {
+            runIdleSess += (row.idle_sessions as number) ?? 0;
+            runIdleTime += (row.idle_time_s as number) ?? 0;
+            const updated: ChartRow = { ...row, idle_sessions: runIdleSess, idle_time_s: Math.round(runIdleTime * 10) / 10 };
+            for (const p of PLANTS) {
+              const k = p.id.toLowerCase();
+              const sk = `${k}-idle_sess`;
+              const tk = `${k}-idle_time`;
+              runIdleSessP[sk] = (runIdleSessP[sk] ?? 0) + ((row[sk] as number) ?? 0);
+              runIdleTimeP[tk] = (runIdleTimeP[tk] ?? 0) + ((row[tk] as number) ?? 0);
+              updated[sk] = runIdleSessP[sk];
+              updated[tk] = Math.round(runIdleTimeP[tk] * 10) / 10;
+            }
+            return updated;
+          });
         } else {
           // 'day' = last 7 days, 'week' = last 30 days
           const days = range === 'week' ? 30 : 7;

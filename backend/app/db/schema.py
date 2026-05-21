@@ -123,9 +123,12 @@ def create_covering_index():
 
 def create_sp_analytics_by_hour():
     """Stored procedure: hourly analytics from HourlyMetrics + CurrentHourMetrics."""
-    # CREATE OR ALTER preserves existing EXECUTE grants (avoids DROP which wipes permissions)
-    sql = """
-    CREATE OR ALTER PROCEDURE sp_analytics_by_hour
+    sql_drop = """
+    IF OBJECT_ID('dbo.sp_analytics_by_hour', 'P') IS NOT NULL
+        DROP PROCEDURE dbo.sp_analytics_by_hour
+    """
+    sql_create = """
+    CREATE PROCEDURE sp_analytics_by_hour
         @unit VARCHAR(10),
         @date DATE
     AS
@@ -137,7 +140,7 @@ def create_sp_analytics_by_hour():
             ISNULL(uptime_pct, 0) AS uptime_pct,
             ISNULL(downtime_pct, 0) AS downtime_pct,
             ISNULL(idle_sessions_count, 0) AS idle_sessions,
-            ISNULL(idle_time_s, 0) AS idle_time_s,
+            ISNULL(CAST(idle_time_s AS FLOAT), 0) AS idle_time_s,
             ISNULL(avg_utilization_pct, 0) AS avg_utilization_pct
         FROM dbo.HourlyMetrics
         WHERE source_note = @unit
@@ -148,19 +151,19 @@ def create_sp_analytics_by_hour():
         -- Current partial hour from CurrentHourMetrics
         SELECT
             DATEPART(HOUR, hour_start) AS hour,
-            piece_count AS pieces,
+            ISNULL(piece_count, 0) AS pieces,
             CAST(CASE
-                WHEN frame_count = 0 THEN 0
+                WHEN ISNULL(frame_count, 0) = 0 THEN 0
                 ELSE (uptime_frames * 100.0 / frame_count)
             END AS DECIMAL(5,1)) AS uptime_pct,
             CAST(CASE
-                WHEN frame_count = 0 THEN 0
+                WHEN ISNULL(frame_count, 0) = 0 THEN 0
                 ELSE 100 - (uptime_frames * 100.0 / frame_count)
             END AS DECIMAL(5,1)) AS downtime_pct,
-            idle_sessions_count AS idle_sessions,
-            idle_time_s AS idle_time_s,
+            ISNULL(idle_sessions_count, 0) AS idle_sessions,
+            ISNULL(idle_time_s, 0) AS idle_time_s,
             CAST(CASE
-                WHEN frame_count = 0 THEN 0
+                WHEN ISNULL(frame_count, 0) = 0 THEN 0
                 ELSE (sum_utilization / frame_count)
             END AS DECIMAL(5,1)) AS avg_utilization_pct
         FROM dbo.CurrentHourMetrics
@@ -168,20 +171,23 @@ def create_sp_analytics_by_hour():
           AND CAST(hour_start AS DATE) = @date
 
         ORDER BY hour;
-    END;
+    END
     """
     with get_connection() as conn:
-        conn.execute(sql)
+        conn.execute(sql_drop)
+        conn.commit()
+        conn.execute(sql_create)
         conn.commit()
 
 
 def create_sp_analytics_by_day():
     """Stored procedure: daily analytics from HourlyMetrics + CurrentHourMetrics."""
-    # CREATE OR ALTER preserves existing EXECUTE grants (avoids DROP which wipes permissions)
-    # Combines completed hours (HourlyMetrics) with the in-progress current hour
-    # (CurrentHourMetrics) so today shows up before the hourly rollup runs.
+    sql_drop = """
+    IF OBJECT_ID('dbo.sp_analytics_by_day', 'P') IS NOT NULL
+        DROP PROCEDURE dbo.sp_analytics_by_day
+    """
     sql = """
-    CREATE OR ALTER PROCEDURE sp_analytics_by_day
+    CREATE PROCEDURE sp_analytics_by_day
         @unit VARCHAR(10) = NULL,
         @from_date VARCHAR(10) = NULL,
         @to_date VARCHAR(10) = NULL
@@ -242,15 +248,20 @@ def create_sp_analytics_by_day():
     END;
     """
     with get_connection() as conn:
+        conn.execute(sql_drop)
+        conn.commit()
         conn.execute(sql)
         conn.commit()
 
 
 def create_sp_analytics_by_shift():
     """Stored procedure: shift analytics (Morning 06-14, Afternoon 14-22, Night 22-06)."""
-    # CREATE OR ALTER preserves existing EXECUTE grants (avoids DROP which wipes permissions)
+    sql_drop = """
+    IF OBJECT_ID('dbo.sp_analytics_by_shift', 'P') IS NOT NULL
+        DROP PROCEDURE dbo.sp_analytics_by_shift
+    """
     sql = """
-    CREATE OR ALTER PROCEDURE sp_analytics_by_shift
+    CREATE PROCEDURE sp_analytics_by_shift
         @unit VARCHAR(10) = NULL,
         @from_date VARCHAR(10) = NULL,
         @to_date VARCHAR(10) = NULL
@@ -280,9 +291,11 @@ def create_sp_analytics_by_shift():
                     ELSE 'Night'
                  END
         ORDER BY date, unit, shift;
-    END;
+    END
     """
     with get_connection() as conn:
+        conn.execute(sql_drop)
+        conn.commit()
         conn.execute(sql)
         conn.commit()
 

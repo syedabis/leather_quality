@@ -249,7 +249,10 @@ def get_plant_states() -> list[dict]:
 
         is_fresh    = staleness_s is not None and staleness_s <= _FRESH_WINDOW_S
         frame_count = frame_count or 1
-        avg_util    = round((uptime_frames or 0) * 100.0 / frame_count, 1)
+        # Use current-hour uptime ratio for live utilization display — daily average
+        # is artificially low because overnight idle frames dilute the percentage.
+        cur_total   = (cur_uptime or 0) + (cur_downtime or 0)
+        avg_util    = round((cur_uptime or 0) * 100.0 / cur_total, 1) if cur_total > 0 else 0.0
         runtime_s   = uptime_frames * (1 / 5)   # approx: frames at TARGET_FPS=5
         # Belt is active if fresh AND more uptime than downtime frames in the current hour
         belt_active = is_fresh and (cur_uptime or 0) > (cur_downtime or 0)
