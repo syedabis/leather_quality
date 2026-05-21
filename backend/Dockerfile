@@ -3,7 +3,7 @@
 # ────────────────────────────────────────────────────────────────
 # Stage 1 — builder: resolve and install Python dependencies with uv
 # ────────────────────────────────────────────────────────────────
-FROM python:3.12-slim-bookworm AS builder
+FROM python:3.12-slim-bullseye AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -22,15 +22,15 @@ RUN uv sync --frozen --no-dev --no-install-project
 # ────────────────────────────────────────────────────────────────
 # Stage 2 — runner: minimal runtime with ODBC driver only
 # ────────────────────────────────────────────────────────────────
-FROM python:3.12-slim-bookworm AS runner
+FROM python:3.12-slim-bullseye AS runner
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH" \
     PYTHONPATH=/app
 
-# Install Microsoft ODBC Driver for SQL Server (runtime requirement of pyodbc).
-# msodbcsql18 is installed; the app auto-detects whichever version is present.
+# ODBC Driver 17 bundles its own OpenSSL 1.x — handles legacy SSL certs on older
+# SQL Server instances that Driver 18 (system OpenSSL 3.x) rejects.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         curl gnupg2 apt-transport-https ca-certificates unixodbc \
@@ -38,13 +38,15 @@ RUN apt-get update \
  && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
         | gpg --dearmor -o /etc/apt/keyrings/microsoft.gpg \
  && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/microsoft.gpg] \
-https://packages.microsoft.com/debian/12/prod bookworm main" \
+https://packages.microsoft.com/debian/11/prod bullseye main" \
         > /etc/apt/sources.list.d/mssql-release.list \
  && apt-get update \
- && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 \
+ && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql17 \
  && apt-get purge -y --auto-remove curl gnupg2 apt-transport-https \
  && apt-get clean \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* \
+ && sed -i 's/MinProtocol = TLSv1.2/MinProtocol = TLSv1/' /etc/ssl/openssl.cnf \
+ && sed -i 's/CipherString = DEFAULT:@SECLEVEL=2/CipherString = DEFAULT:@SECLEVEL=0/' /etc/ssl/openssl.cnf
 
 WORKDIR /app
 

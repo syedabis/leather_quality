@@ -38,8 +38,8 @@ def _get_driver() -> str:
 
 def _build_conn_str() -> str:
     driver = _get_driver()
-    # Driver 18 requires TrustServerCertificate=yes for self-signed or internal certs
-    extra = "TrustServerCertificate=yes;"
+    # Encrypt=no bypasses SSL legacy sigalg errors on older SQL Server instances (safe on LAN)
+    extra = "TrustServerCertificate=yes;Encrypt=no;"
 
     if DB_USER and DB_PASSWORD:
         return (
