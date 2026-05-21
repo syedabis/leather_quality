@@ -25,8 +25,23 @@ export const PREVIEW_VIDEOS: Record<PlantId, string> = {
   'SP-06': '/monitoring/Worker-Drops-Hides-Onto-A-Conveyor-Belt-Leather-M-2026-01-22-13-32-14-Utc.mp4',
 };
 
-export const WS_URL  = process.env.NEXT_PUBLIC_WS_URL  ?? 'ws://localhost:8001';
-export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8001';
+// Derive the backend host from the page's hostname at runtime so the dashboard
+// works from any machine on the same network — not just localhost.
+// Falls back to env vars during SSR (where window is undefined).
+function _backendBase(scheme: 'http' | 'ws'): string {
+  if (typeof window !== 'undefined') {
+    const proto = scheme === 'ws'
+      ? (window.location.protocol === 'https:' ? 'wss:' : 'ws:')
+      : window.location.protocol;
+    return `${proto}//${window.location.hostname}:8001`;
+  }
+  return scheme === 'ws'
+    ? (process.env.NEXT_PUBLIC_WS_URL  ?? 'ws://localhost:8001')
+    : (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8001');
+}
+
+export const WS_URL  = _backendBase('ws');
+export const API_URL = _backendBase('http');
 
 // Belt utilization colour thresholds
 export const UTIL_HIGH = 80; // green

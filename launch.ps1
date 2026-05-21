@@ -1,9 +1,20 @@
 # CONFIGURATION
 $DEPLOY_DIR       = $PSScriptRoot
 $INFERENCE_DIR    = Join-Path $DEPLOY_DIR "inference-client"
-$INFERENCE_SCRIPT = "run_all_plants.py"
+$INFERENCE_SCRIPT = "run_stream_server.py"
 $DASHBOARD_URL    = "http://localhost:3000"
 $DOCKER_EXE       = "C:\Program Files\Docker\Docker\Docker Desktop.exe"
+
+# Detect LAN IP — pick the adapter that has a default gateway (i.e. the active one)
+$lanIP = (Get-NetIPConfiguration |
+    Where-Object { $_.IPv4DefaultGateway -ne $null -and $_.NetAdapter.Status -eq "Up" } |
+    Select-Object -First 1).IPv4Address.IPAddress
+if (-not $lanIP) {
+    $lanIP = (Get-NetIPAddress -AddressFamily IPv4 |
+        Where-Object { $_.IPAddress -notmatch '^(127\.|169\.254\.)' } |
+        Select-Object -First 1).IPAddress
+}
+$NETWORK_URL = if ($lanIP) { "http://${lanIP}:3000" } else { "(IP not detected)" }
 
 $ErrorActionPreference = "SilentlyContinue"
 $inferenceProc = $null
@@ -117,14 +128,19 @@ if (Test-Path $inferenceScript) {
 
 # 7. Running banner
 Write-Host ""
-Write-Host "  ============================================" -ForegroundColor Green
-Write-Host "     SYSTEM IS RUNNING                      " -ForegroundColor Green
-Write-Host "                                            " -ForegroundColor Green
-Write-Host "     Dashboard : http://localhost:3000      " -ForegroundColor White
-Write-Host "     Cameras   : All plants active          " -ForegroundColor White
-Write-Host "                                            " -ForegroundColor Green
-Write-Host "     Press Enter to STOP everything         " -ForegroundColor Yellow
-Write-Host "  ============================================" -ForegroundColor Green
+Write-Host "  ================================================" -ForegroundColor Green
+Write-Host "     SYSTEM IS RUNNING                           " -ForegroundColor Green
+Write-Host "                                                 " -ForegroundColor Green
+Write-Host "     This machine  : http://localhost:3000       " -ForegroundColor White
+Write-Host "     Network (LAN) : $NETWORK_URL" -ForegroundColor Cyan
+Write-Host "                                                 " -ForegroundColor Green
+Write-Host "     Open either address in any browser on       " -ForegroundColor Gray
+Write-Host "     the same Wi-Fi / network to view live.      " -ForegroundColor Gray
+Write-Host "                                                 " -ForegroundColor Green
+Write-Host "     Cameras  : All 6 plants active              " -ForegroundColor White
+Write-Host "                                                 " -ForegroundColor Green
+Write-Host "     Press Enter to STOP everything              " -ForegroundColor Yellow
+Write-Host "  ================================================" -ForegroundColor Green
 Write-Host ""
 
 Read-Host | Out-Null
