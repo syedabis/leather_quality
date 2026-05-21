@@ -1,7 +1,7 @@
 # CONFIGURATION
 $DEPLOY_DIR       = $PSScriptRoot
 $INFERENCE_DIR    = Join-Path $DEPLOY_DIR "inference-client"
-$INFERENCE_SCRIPT = "run_stream_server.py"
+$INFERENCE_SCRIPT = "run_all_plants.py"
 $DASHBOARD_URL    = "http://localhost:3000"
 $DOCKER_EXE       = "C:\Program Files\Docker\Docker\Docker Desktop.exe"
 
