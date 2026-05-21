@@ -120,7 +120,7 @@ Write-Host "  Browser opened." -ForegroundColor Green
 $inferenceScript = Join-Path $INFERENCE_DIR $INFERENCE_SCRIPT
 if (Test-Path $inferenceScript) {
     Write-Host "  Starting inference on all plants..." -ForegroundColor Cyan
-    $inferenceProc = Start-Process -FilePath "python" -ArgumentList $INFERENCE_SCRIPT -WorkingDirectory $INFERENCE_DIR -PassThru
+    $inferenceProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/k python $INFERENCE_SCRIPT" -WorkingDirectory $INFERENCE_DIR -PassThru
     Write-Host "  Inference running (PID $($inferenceProc.Id))." -ForegroundColor Green
 } else {
     Write-Host "  Inference script not found - skipping." -ForegroundColor Yellow
