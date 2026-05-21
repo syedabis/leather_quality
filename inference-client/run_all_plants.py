@@ -125,17 +125,30 @@ def _push_frame(plant_id: str, frame_bgr) -> None:
 
 def _load_settings() -> dict:
     """Read SystemSettings from DB. Falls back to defaults on any error."""
-    defaults = {"idle_timeout_sec": 30}
+    defaults = {"idle_timeout_sec": 30, "shift_start": "07:00", "shift_end": "17:00"}
     try:
         with get_connection() as conn:
             cur = conn.cursor()
             cur.execute("SELECT setting_key, setting_value FROM dbo.SystemSettings")
             rows = cur.fetchall()
             if rows:
-                return {r[0]: r[1] for r in rows}
+                result = dict(defaults)
+                result.update({r[0]: r[1] for r in rows})
+                return result
     except Exception as e:
         print(f"[settings] Could not read from DB, using defaults: {e}")
     return defaults
+
+
+# ── Shift helpers ──────────────────────────────────────────────────────────
+
+_shift_start = "07:00"
+_shift_end   = "17:00"
+
+def _within_shift() -> bool:
+    """Returns True if current time is within the configured shift window."""
+    now = time.strftime("%H:%M")
+    return _shift_start <= now <= _shift_end
 
 
 # ── Config helpers (identical to run_live_preview.py) ─────────────────────
@@ -381,14 +394,18 @@ def _plant_worker(
                 utilization_pct = float(result.boxes.conf.mean().cpu().numpy()) * 100
 
             # ── DB write ───────────────────────────────────────────────────
+            # Outside shift hours: still write piece counts and belt status
+            # so the live dashboard stays fresh, but force belt_active=True
+            # so no idle_time_s or downtime_frames are accumulated.
+            in_shift = _within_shift()
             FrameProcessor.process_frame(
                 source_note          = db_unit,
                 total_count          = total_count,
-                belt_active          = belt_active,
+                belt_active          = belt_active if in_shift else True,
                 utilization_pct      = utilization_pct,
                 piece_delta          = piece_delta,
                 frame_time_delta_s   = frame_time_delta,
-                idle_sessions_delta  = new_idle_session,
+                idle_sessions_delta  = new_idle_session if in_shift else 0,
             )
             new_idle_session = 0
 
@@ -485,12 +502,15 @@ def main() -> None:
     if not args.model.exists():
         raise FileNotFoundError(f"Model not found: {args.model}")
 
-    # Load settings from DB (idle timeout etc.)
-    global IDLE_TIMEOUT_SEC, DOWNTIME_THRESHOLD_SEC, DISPLAY_W, DISPLAY_H
+    # Load settings from DB (idle timeout, shift hours, etc.)
+    global IDLE_TIMEOUT_SEC, DOWNTIME_THRESHOLD_SEC, DISPLAY_W, DISPLAY_H, _shift_start, _shift_end
     settings = _load_settings()
     IDLE_TIMEOUT_SEC       = int(settings.get("idle_timeout_sec",       30))
     DOWNTIME_THRESHOLD_SEC = int(settings.get("downtime_threshold_sec", 300))
+    _shift_start           = settings.get("shift_start", "07:00")
+    _shift_end             = settings.get("shift_end",   "17:00")
     print(f"[settings] Idle timeout: {IDLE_TIMEOUT_SEC}s | Downtime threshold: {DOWNTIME_THRESHOLD_SEC}s")
+    print(f"[shift]    Counting idle/downtime between {_shift_start} – {_shift_end}")
 
     DISPLAY_W, DISPLAY_H = _calc_window_size()
     sw, sh = _get_screen_size()

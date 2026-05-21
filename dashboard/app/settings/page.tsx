@@ -72,7 +72,7 @@ export default function Settings() {
       setSettingsSaving(false);
       setTimeout(() => setSettingsStatus('idle'), 3000);
     }
-  }, [idleTimeout]);
+  }, [idleTimeout, downtimeThreshold, shiftStart, shiftEnd]);
 
   const handleClearDatabase = useCallback(async () => {
     setClearing(true);
