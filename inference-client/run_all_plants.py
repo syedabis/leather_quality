@@ -359,7 +359,7 @@ def _plant_worker(
 
             # ── Belt idle / active state ───────────────────────────────────
             time_since_new = time.time() - last_detection_time
-            if counted_ids_now:
+            if len(roi_ids) > 0:
                 last_detection_time = time.time()
                 belt_active         = True
                 dynamic_frame_skip  = frame_skip
