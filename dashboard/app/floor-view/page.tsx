@@ -5,7 +5,7 @@ import { motion } from 'framer-motion';
 import { FiDownload } from 'react-icons/fi';
 
 import { usePlantsData } from '../../hooks/usePlantsData';
-import { PLANTS } from '../../lib/constants';
+import { PLANTS, fmtDuration } from '../../lib/constants';
 import { useSidebar } from '../../contexts/SidebarContext';
 import type { PlantId, PlantState } from '../../types';
 
@@ -58,8 +58,8 @@ function PlantCard({ plant, dayElapsedSecs, delay = 0 }: PlantCardProps) {
   const isRunning = plant.online && plant.belt_active;
   const isIdle    = plant.online && !plant.belt_active;
 
-  const activeHrs = `${(plant.runtime_s / 3600).toFixed(2)}h`;
-  const idleHrs   = `${(plant.idle_s   / 3600).toFixed(2)}h`;
+  const activeHrs = fmtDuration(plant.runtime_s);
+  const idleHrs   = fmtDuration(plant.idle_s);
 
   // Progress bar — proportional to day elapsed
   const total      = dayElapsedSecs || 1;
@@ -224,8 +224,8 @@ export default function FloorView() {
     const idleS   = plantList.reduce((s, p) => s + (p.idle_s   ?? 0), 0);
     return {
       totalPieces:    plantList.reduce((s, p) => s + (p.total_count ?? 0), 0),
-      totalActiveStr: `${(activeS / 3600).toFixed(2)}h`,
-      totalIdleStr:   `${(idleS   / 3600).toFixed(2)}h`,
+      totalActiveStr: fmtDuration(activeS),
+      totalIdleStr:   fmtDuration(idleS),
       runningCount:   plantList.filter(p => p.online && p.belt_active).length,
     };
   }, [plantList]);
@@ -237,8 +237,8 @@ export default function FloorView() {
         <td>${p.plant_name}</td>
         <td>${p.online ? (p.belt_active ? '<span class="running">Running</span>' : '<span class="idle">Idle</span>') : '<span class="offline">Offline</span>'}</td>
         <td>${(p.total_count ?? 0).toLocaleString()}</td>
-        <td>${(p.runtime_s / 3600).toFixed(2)}</td>
-        <td>${(p.idle_s    / 3600).toFixed(2)}</td>
+        <td>${fmtDuration(p.runtime_s)}</td>
+        <td>${fmtDuration(p.idle_s)}</td>
         <td>${Math.round(p.utilization ?? 0)}%</td>
       </tr>`).join('');
     const html = `<!DOCTYPE html><html><head><title>Floor View — ${dateStr}</title>
