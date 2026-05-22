@@ -464,15 +464,25 @@ def _plant_worker(
             overlay = display.copy()
             cv2.rectangle(overlay, (rx1, ry1), (rx2, ry2), (0, 255, 0), -1)
             cv2.addWeighted(overlay, 0.08, display, 0.92, 0, display)
-            cv2.rectangle(display, (rx1, ry1), (rx2, ry2), (0, 255, 0), 2)
+            _roi_thickness = max(2, int(2 * max(0.5, dw / 1280.0)))
+            cv2.rectangle(display, (rx1, ry1), (rx2, ry2), (0, 255, 0), _roi_thickness)
 
-            # Header text
-            _f, _fs, _ft, _pad, _ty = cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1, 4, 20
+            # Scale text/dots proportionally to actual frame width so they
+            # remain readable at both grid size and full-screen.
+            _scale = max(0.5, dw / 1280.0)
+            _f   = cv2.FONT_HERSHEY_SIMPLEX
+            _fs  = round(0.55 * _scale, 2)
+            _ft  = max(1, int(1 * _scale))
+            _pad = max(4, int(6 * _scale))
+            _ty  = max(20, int(28 * _scale))
+
+            # Left header: date/time
             _dt = time.strftime("%d-%m-%Y  %H:%M:%S")
             (dtw, dth), _ = cv2.getTextSize(_dt, _f, _fs, _ft)
             cv2.rectangle(display, (6 - _pad, _ty - dth - _pad), (6 + dtw + _pad, _ty + _pad), (0, 0, 0), -1)
             cv2.putText(display, _dt, (6, _ty), _f, _fs, (255, 255, 255), _ft)
 
+            # Right header: unit | status | count
             _st_str   = "Active" if belt_active else "Downtime"
             _st_color = (0, 255, 0) if belt_active else (0, 0, 255)
             _seg_u = f"{unit} ";  _seg_s = f"({_st_str})";  _seg_c = f"  Count:{counter.total}"
@@ -485,7 +495,9 @@ def _plant_worker(
             cv2.putText(display, _seg_s, (dw - cw - sw - 8, _ty), _f, _fs, _st_color,       _ft)
             cv2.putText(display, _seg_u, (_rx, _ty),               _f, _fs, (255, 255, 255), _ft)
 
-            # Track dots at original coords
+            # Track dots — radius scales with frame size
+            _r_inner = max(4, int(5 * _scale))
+            _r_outer = max(6, int(8 * _scale))
             for track in debug_tracks:
                 tid, in_roi_flag = track["tid"], track["in_roi"]
                 dcx = int(track["cx"])
@@ -493,8 +505,8 @@ def _plant_worker(
                 counted_now = tid in counted_ids_now
                 counted     = tid in counter.counted_ids
                 dot_color   = (255, 255, 0) if counted_now else ((0, 255, 0) if in_roi_flag else (0, 165, 255))
-                cv2.circle(display, (dcx, dcy), 4, dot_color, -1)
-                cv2.circle(display, (dcx, dcy), 6, dot_color, 2)
+                cv2.circle(display, (dcx, dcy), _r_inner, dot_color, -1)
+                cv2.circle(display, (dcx, dcy), _r_outer, dot_color, 2)
 
             # Put frame into display queue — drop oldest if full (never block inference)
             try:
