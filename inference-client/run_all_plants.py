@@ -208,6 +208,32 @@ def _in_roi(cx: float, cy: float, roi: dict) -> bool:
             roi["y"] <= cy <= roi["y"] + roi["h"])
 
 
+def _suppress_overlapping_tracks(
+    track_results: list[tuple[int, list]],
+    iou_threshold: float = 0.30,
+) -> list[tuple[int, list]]:
+    """Remove duplicate tracks caused by one object getting multiple IDs.
+
+    Sorts by track ID (ascending = older first), then suppresses any
+    newer track whose box overlaps an older one above iou_threshold.
+    """
+    if len(track_results) <= 1:
+        return track_results
+    sorted_tracks = sorted(track_results, key=lambda x: x[0])
+    kept: list[tuple[int, list]] = []
+    suppressed: set[int] = set()
+    for i, (tid_i, box_i) in enumerate(sorted_tracks):
+        if tid_i in suppressed:
+            continue
+        kept.append((tid_i, box_i))
+        for tid_j, box_j in sorted_tracks[i + 1:]:
+            if tid_j in suppressed:
+                continue
+            if SimpleIoUTracker._iou(box_i, box_j) > iou_threshold:
+                suppressed.add(tid_j)
+    return kept
+
+
 # ── Tracker & counter (per-plant instances) ────────────────────────────────
 
 class SimpleIoUTracker:
@@ -355,7 +381,7 @@ def _plant_worker(
             boxes_xyxy = result.boxes.xyxy.cpu().numpy().tolist() if result.boxes is not None and len(result.boxes) > 0 else []
 
             # ── Tracking ───────────────────────────────────────────────────
-            track_results    = tracker.update(boxes_xyxy)
+            track_results    = _suppress_overlapping_tracks(tracker.update(boxes_xyxy))
             debug_tracks: list[dict] = []
             roi_ids: list[int] = []
             for tid, box in track_results:
