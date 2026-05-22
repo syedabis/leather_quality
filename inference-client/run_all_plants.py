@@ -211,11 +211,15 @@ def _in_roi(cx: float, cy: float, roi: dict) -> bool:
 def _suppress_overlapping_tracks(
     track_results: list[tuple[int, list]],
     iou_threshold: float = 0.30,
+    iomin_threshold: float = 0.50,
 ) -> list[tuple[int, list]]:
-    """Remove duplicate tracks caused by one object getting multiple IDs.
+    """Remove duplicate track IDs caused by one object getting multiple detections.
 
-    Sorts by track ID (ascending = older first), then suppresses any
-    newer track whose box overlaps an older one above iou_threshold.
+    Two checks (older ID always wins):
+    1. IoU > iou_threshold   — boxes overlap significantly (side-by-side duplicates)
+    2. IoMin > iomin_threshold — one box is mostly contained inside the other
+       (small fragment box inside a large leather-piece box; IoU is low but
+        intersection / min-area is high)
     """
     if len(track_results) <= 1:
         return track_results
@@ -229,7 +233,17 @@ def _suppress_overlapping_tracks(
         for tid_j, box_j in sorted_tracks[i + 1:]:
             if tid_j in suppressed:
                 continue
+            # Standard IoU check
             if SimpleIoUTracker._iou(box_i, box_j) > iou_threshold:
+                suppressed.add(tid_j)
+                continue
+            # Containment check: intersection / min-area
+            ix1 = max(box_i[0], box_j[0]); iy1 = max(box_i[1], box_j[1])
+            ix2 = min(box_i[2], box_j[2]); iy2 = min(box_i[3], box_j[3])
+            inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+            area_i = max(1.0, (box_i[2] - box_i[0]) * (box_i[3] - box_i[1]))
+            area_j = max(1.0, (box_j[2] - box_j[0]) * (box_j[3] - box_j[1]))
+            if inter / min(area_i, area_j) > iomin_threshold:
                 suppressed.add(tid_j)
     return kept
 
@@ -376,7 +390,7 @@ def _plant_worker(
 
             # ── GPU inference (serialized across all threads) ──────────────
             with _gpu_lock:
-                results = model.predict(frame, conf=CONF, iou=0.7, device=DEVICE, verbose=False, show=False)
+                results = model.predict(frame, conf=CONF, iou=0.45, device=DEVICE, verbose=False, show=False)
             result     = results[0]
             boxes_xyxy = result.boxes.xyxy.cpu().numpy().tolist() if result.boxes is not None and len(result.boxes) > 0 else []
 
@@ -437,24 +451,16 @@ def _plant_worker(
             )
             new_idle_session = 0
 
-            # ── Render display frame ───────────────────────────────────────
-            annotated = result.plot(boxes=False)
-            h, w      = annotated.shape[:2]
-            scale     = min(DISPLAY_W / w, DISPLAY_H / h)
-            new_w, new_h = int(w * scale), int(h * scale)
-            resized   = cv2.resize(annotated, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            # ── Render display frame (full original resolution) ────────────
+            # Draw all overlays on the full-res annotated frame.
+            # cv2.WINDOW_NORMAL scales it down for the grid view, and shows
+            # full quality when the window is resized or full-screened.
+            display = result.plot(boxes=False)
+            dh, dw  = display.shape[:2]
 
-            display   = np.zeros((DISPLAY_H, DISPLAY_W, 3), dtype=np.uint8)
-            x_off     = (DISPLAY_W - new_w) // 2
-            y_off     = (DISPLAY_H - new_h) // 2
-            display[y_off:y_off + new_h, x_off:x_off + new_w] = resized
-
-            sx, sy = scale, scale
-
-            # ROI overlay
-            rx1 = int(roi["x"] * sx) + x_off;  ry1 = int(roi["y"] * sy) + y_off
-            rx2 = int((roi["x"] + roi["w"]) * sx) + x_off
-            ry2 = int((roi["y"] + roi["h"]) * sy) + y_off
+            # ROI overlay at original pixel coords
+            rx1, ry1 = roi["x"], roi["y"]
+            rx2, ry2 = roi["x"] + roi["w"], roi["y"] + roi["h"]
             overlay = display.copy()
             cv2.rectangle(overlay, (rx1, ry1), (rx2, ry2), (0, 255, 0), -1)
             cv2.addWeighted(overlay, 0.08, display, 0.92, 0, display)
@@ -473,17 +479,17 @@ def _plant_worker(
             (uw, _), _ = cv2.getTextSize(_seg_u, _f, _fs, _ft)
             (sw, _), _ = cv2.getTextSize(_seg_s, _f, _fs, _ft)
             (cw, _), _ = cv2.getTextSize(_seg_c, _f, _fs, _ft)
-            _rx = DISPLAY_W - uw - sw - cw - 8
-            cv2.rectangle(display, (_rx - _pad, _ty - dth - _pad), (DISPLAY_W - 8 + _pad, _ty + _pad), (0, 0, 0), -1)
-            cv2.putText(display, _seg_c, (DISPLAY_W - cw - 8, _ty),     _f, _fs, (255, 255, 255), _ft)
-            cv2.putText(display, _seg_s, (DISPLAY_W - cw - sw - 8, _ty), _f, _fs, _st_color,        _ft)
-            cv2.putText(display, _seg_u, (_rx, _ty),                     _f, _fs, (255, 255, 255),  _ft)
+            _rx = dw - uw - sw - cw - 8
+            cv2.rectangle(display, (_rx - _pad, _ty - dth - _pad), (dw - 8 + _pad, _ty + _pad), (0, 0, 0), -1)
+            cv2.putText(display, _seg_c, (dw - cw - 8, _ty),      _f, _fs, (255, 255, 255), _ft)
+            cv2.putText(display, _seg_s, (dw - cw - sw - 8, _ty), _f, _fs, _st_color,       _ft)
+            cv2.putText(display, _seg_u, (_rx, _ty),               _f, _fs, (255, 255, 255), _ft)
 
-            # Track dots
+            # Track dots at original coords
             for track in debug_tracks:
                 tid, in_roi_flag = track["tid"], track["in_roi"]
-                dcx = int(track["cx"] * sx) + x_off
-                dcy = int(track["cy"] * sy) + y_off
+                dcx = int(track["cx"])
+                dcy = int(track["cy"])
                 counted_now = tid in counted_ids_now
                 counted     = tid in counter.counted_ids
                 dot_color   = (255, 255, 0) if counted_now else ((0, 255, 0) if in_roi_flag else (0, 165, 255))

@@ -189,8 +189,15 @@ def _in_roi(cx: float, cy: float, roi: dict) -> bool:
 def _suppress_overlapping_tracks(
     track_results: list[tuple[int, list]],
     iou_threshold: float = 0.30,
+    iomin_threshold: float = 0.50,
 ) -> list[tuple[int, list]]:
-    """Remove duplicate track IDs caused by one object getting multiple detections."""
+    """Remove duplicate track IDs caused by one object getting multiple detections.
+
+    Two checks (older ID always wins):
+    1. IoU > iou_threshold   — boxes overlap significantly
+    2. IoMin > iomin_threshold — one box is mostly contained inside the other
+       (catches small fragment detections inside a large leather-piece box)
+    """
     if len(track_results) <= 1:
         return track_results
     sorted_tracks = sorted(track_results, key=lambda x: x[0])
@@ -203,7 +210,17 @@ def _suppress_overlapping_tracks(
         for tid_j, box_j in sorted_tracks[i + 1:]:
             if tid_j in suppressed:
                 continue
+            # Standard IoU check
             if SimpleIoUTracker._iou(box_i, box_j) > iou_threshold:
+                suppressed.add(tid_j)
+                continue
+            # Containment check: intersection / min-area
+            ix1 = max(box_i[0], box_j[0]); iy1 = max(box_i[1], box_j[1])
+            ix2 = min(box_i[2], box_j[2]); iy2 = min(box_i[3], box_j[3])
+            inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+            area_i = max(1.0, (box_i[2] - box_i[0]) * (box_i[3] - box_i[1]))
+            area_j = max(1.0, (box_j[2] - box_j[0]) * (box_j[3] - box_j[1]))
+            if inter / min(area_i, area_j) > iomin_threshold:
                 suppressed.add(tid_j)
     return kept
 
@@ -476,7 +493,7 @@ def run_video(model: YOLO, video_source, unit: str,
         frame_time_delta = now - last_frame_time
         last_frame_time  = now
 
-        results    = model.predict(frame, conf=CONF, iou=0.7, device=DEVICE, verbose=False, show=False)
+        results    = model.predict(frame, conf=CONF, iou=0.45, device=DEVICE, verbose=False, show=False)
         result     = results[0]
         boxes_xyxy = result.boxes.xyxy.cpu().numpy().tolist() if result.boxes is not None and len(result.boxes) > 0 else []
 
