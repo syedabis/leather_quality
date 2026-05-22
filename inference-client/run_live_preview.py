@@ -186,6 +186,28 @@ def _in_roi(cx: float, cy: float, roi: dict) -> bool:
             roi["y"] <= cy <= roi["y"] + roi["h"])
 
 
+def _suppress_overlapping_tracks(
+    track_results: list[tuple[int, list]],
+    iou_threshold: float = 0.30,
+) -> list[tuple[int, list]]:
+    """Remove duplicate track IDs caused by one object getting multiple detections."""
+    if len(track_results) <= 1:
+        return track_results
+    sorted_tracks = sorted(track_results, key=lambda x: x[0])
+    kept: list[tuple[int, list]] = []
+    suppressed: set[int] = set()
+    for i, (tid_i, box_i) in enumerate(sorted_tracks):
+        if tid_i in suppressed:
+            continue
+        kept.append((tid_i, box_i))
+        for tid_j, box_j in sorted_tracks[i + 1:]:
+            if tid_j in suppressed:
+                continue
+            if SimpleIoUTracker._iou(box_i, box_j) > iou_threshold:
+                suppressed.add(tid_j)
+    return kept
+
+
 # ── Data classes ───────────────────────────────────────────────────────────
 
 @dataclass
@@ -458,7 +480,7 @@ def run_video(model: YOLO, video_source, unit: str,
         result     = results[0]
         boxes_xyxy = result.boxes.xyxy.cpu().numpy().tolist() if result.boxes is not None and len(result.boxes) > 0 else []
 
-        track_results   = tracker.update(boxes_xyxy)   # [(tid, box), ...]
+        track_results   = _suppress_overlapping_tracks(tracker.update(boxes_xyxy))
         debug_tracks: list[dict] = []
         counted_ids_now: set[int] = set()
         roi_ids: list[int] = []
