@@ -3,8 +3,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { useUser } from '@clerk/nextjs';
 import { motion } from 'framer-motion';
 import { FiCamera, FiCheck, FiAlertCircle, FiUser, FiMail, FiShield, FiSliders, FiTrash2 } from 'react-icons/fi';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8001';
+import { API_URL } from '../../lib/constants';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 

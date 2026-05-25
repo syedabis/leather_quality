@@ -13,31 +13,30 @@ from datetime import date as _date
 from decimal import Decimal
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-# ── Resolve sibling package paths ─────────────────────────────────────────────
-_ROOT         = Path(__file__).resolve().parents[3]   # spray-plant/
-_CLIENT       = _ROOT / "client-shared"
-_EMAIL_MS     = _ROOT / "email_microservice"
+# ── Sibling package paths (used only by send/preview endpoints) ───────────────
+_ROOT   = Path(__file__).resolve().parents[3]   # spray-plant/
+_CLIENT = _ROOT / "client-shared"
 
-for _p in (_ROOT, _CLIENT):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
+from app.db.connection import get_connection
+from app.db.queries import UNITS, PLANT_NAMES
 
-# daily_report_generator reads LC_DB_SERVER at import time — set ours first
-os.environ.setdefault("LC_DB_SERVER", os.getenv("DB_SERVER", r"localhost\SQLEXPRESS"))
-os.environ.setdefault("LC_DB_NAME",   os.getenv("DB_NAME",   "LeatherCount"))
-os.environ.setdefault("LC_DB_USER",   os.getenv("DB_USER",   ""))
-os.environ.setdefault("LC_DB_PASSWORD", os.getenv("DB_PASSWORD", ""))
-os.environ.setdefault("LC_PLANT_NAME", "Spray Plant Factory")
 
-from daily_report_generator import build_excel, build_pdf, REPORT_DIR  # noqa: E402
-from email_microservice.sender import (                                  # noqa: E402
-    send_report_email, build_plant_row, plant_status,
-)
-from app.db.connection import get_connection                             # noqa: E402
-from app.db.queries import UNITS, PLANT_NAMES                           # noqa: E402
+def _ensure_report_deps():
+    """Lazy-import heavy packages so the module loads even if they're absent."""
+    for _p in (_ROOT, _CLIENT):
+        if str(_p) not in sys.path:
+            sys.path.insert(0, str(_p))
+    os.environ.setdefault("LC_DB_SERVER",   os.getenv("DB_SERVER",   r"localhost\SQLEXPRESS"))
+    os.environ.setdefault("LC_DB_NAME",     os.getenv("DB_NAME",     "LeatherCount"))
+    os.environ.setdefault("LC_DB_USER",     os.getenv("DB_USER",     ""))
+    os.environ.setdefault("LC_DB_PASSWORD", os.getenv("DB_PASSWORD", ""))
+    os.environ.setdefault("LC_PLANT_NAME",  "Spray Plant Factory")
+    from daily_report_generator import build_excel, build_pdf, REPORT_DIR  # noqa: F401
+    from email_microservice.sender import send_report_email, build_plant_row, plant_status  # noqa: F401
+    return build_excel, build_pdf, REPORT_DIR, send_report_email, build_plant_row, plant_status
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
@@ -183,6 +182,75 @@ def _per_unit_summary(report_date: str) -> list[dict]:
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
+@router.get("/daily-summary")
+def daily_summary(date_param: str = Query(str(_date.today()), alias="date")):
+    """
+    Returns the two-section daily report data for the reports page.
+    Section 1: per-unit utilisation (available hrs, shift run, idle, utilisation %, status)
+    Section 2: per-unit pieces (pieces, daily target, achievement %, status)
+    """
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+
+            # Shift hours from settings
+            cur.execute(
+                "SELECT setting_key, setting_value FROM dbo.SystemSettings "
+                "WHERE setting_key IN ('shift_start','shift_end')"
+            )
+            settings = {r[0]: r[1] for r in cur.fetchall()}
+            shift_start = settings.get("shift_start", "07:00")
+            shift_end   = settings.get("shift_end",   "17:00")
+            sh, sm = map(int, shift_start.split(":"))
+            eh, em = map(int, shift_end.split(":"))
+            available_hours = round((eh * 60 + em - sh * 60 - sm) / 60, 1)
+
+            # Per-unit day analytics
+            cur.execute(
+                "EXEC sp_analytics_by_day @unit=?, @from_date=?, @to_date=?",
+                (None, date_param, date_param)
+            )
+            rows = cur.fetchall()
+
+            # Daily targets
+            cur.execute("SELECT unit, daily_target FROM dbo.PlantTargets")
+            targets = {r[0]: int(r[1]) for r in cur.fetchall()}
+
+        plants = []
+        for row in rows:
+            unit          = row[1]
+            pieces        = int(row[2] or 0)
+            uptime_pct    = float(row[3] or 0)
+            idle_time_s   = float(row[6] or 0)
+            utilization   = float(row[7] or 0)
+            shift_run_hrs = round(available_hours * uptime_pct / 100, 1)
+            idle_hrs      = round(idle_time_s / 3600, 1)
+            daily_target  = targets.get(unit, 1500)
+            achievement   = round(pieces / daily_target * 100, 1) if daily_target else 0
+            plants.append({
+                "unit":             unit,
+                "available_hours":  available_hours,
+                "shift_run_hrs":    shift_run_hrs,
+                "idle_time_hrs":    idle_hrs,
+                "utilization_pct":  round(utilization, 1),
+                "util_status":      "On Target" if utilization >= 90 else "Monitor",
+                "pieces":           pieces,
+                "daily_target":     daily_target,
+                "achievement_pct":  achievement,
+                "piece_status":     "On Target" if achievement >= 90 else "Monitor",
+            })
+
+        return {
+            "date":            date_param,
+            "shift_start":     shift_start,
+            "shift_end":       shift_end,
+            "available_hours": available_hours,
+            "plants":          plants,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
 @router.get("/preview")
 def preview_report(report_date: str = str(_date.today())):
     """Return what data would go into today's report (no email sent)."""
@@ -207,6 +275,8 @@ def preview_report(report_date: str = str(_date.today())):
 def send_report(req: ReportRequest):
     """Generate Excel + PDF for req.date and email them with live per-unit data."""
     try:
+        build_excel, build_pdf, REPORT_DIR, send_report_email, build_plant_row, plant_status = _ensure_report_deps()
+
         # 1 — Fetch data from our DB
         data = fetch_report_data(req.date)
 

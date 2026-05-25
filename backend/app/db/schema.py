@@ -314,6 +314,30 @@ def migrate_add_last_belt_active():
         conn.commit()
 
 
+def create_plant_targets_table():
+    """Create PlantTargets table — one daily target per unit."""
+    sql = """
+    IF OBJECT_ID('dbo.PlantTargets', 'U') IS NULL
+    CREATE TABLE dbo.PlantTargets (
+        unit         VARCHAR(10) PRIMARY KEY,
+        daily_target INT NOT NULL DEFAULT 1500
+    );
+    """
+    seed_sql = """
+    IF NOT EXISTS (SELECT 1 FROM dbo.PlantTargets WHERE unit = 'SP-01') INSERT INTO dbo.PlantTargets VALUES ('SP-01', 1500);
+    IF NOT EXISTS (SELECT 1 FROM dbo.PlantTargets WHERE unit = 'SP-02') INSERT INTO dbo.PlantTargets VALUES ('SP-02', 1500);
+    IF NOT EXISTS (SELECT 1 FROM dbo.PlantTargets WHERE unit = 'SP-03') INSERT INTO dbo.PlantTargets VALUES ('SP-03', 1500);
+    IF NOT EXISTS (SELECT 1 FROM dbo.PlantTargets WHERE unit = 'SP-04') INSERT INTO dbo.PlantTargets VALUES ('SP-04', 1500);
+    IF NOT EXISTS (SELECT 1 FROM dbo.PlantTargets WHERE unit = 'SP-05') INSERT INTO dbo.PlantTargets VALUES ('SP-05', 1500);
+    IF NOT EXISTS (SELECT 1 FROM dbo.PlantTargets WHERE unit = 'SP-06') INSERT INTO dbo.PlantTargets VALUES ('SP-06', 1500);
+    """
+    with get_connection() as conn:
+        conn.execute(sql)
+        conn.commit()
+        conn.execute(seed_sql)
+        conn.commit()
+
+
 def create_settings_table():
     """Create SystemSettings table and seed defaults."""
     sql = """
@@ -365,6 +389,7 @@ def initialize_schema():
             create_sp_analytics_by_day()
             create_sp_analytics_by_shift()
             create_settings_table()
+            create_plant_targets_table()
             migrate_add_last_belt_active()
             print("✅ Stored procedures refreshed.")
             return
@@ -378,6 +403,7 @@ def initialize_schema():
         create_sp_analytics_by_day()
         create_sp_analytics_by_shift()
         create_settings_table()
+        create_plant_targets_table()
         print("✅ Schema initialization complete!")
     except Exception as e:
         print(f"❌ Schema initialization failed: {e}")

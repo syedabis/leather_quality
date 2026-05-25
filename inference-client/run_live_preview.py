@@ -81,20 +81,17 @@ UNIT_MAP = {
 # Set BACKEND_URL in .env to push annotated frames to the dashboard.
 # Set to empty string to disable streaming (inference-only mode).
 BACKEND_URL  = os.getenv("BACKEND_URL", "http://localhost:8001").rstrip("/")
-THUMB_EVERY   = 1    # push every processed frame for real-time monitoring
-THUMB_QUALITY = 60   # JPEG quality — balanced for speed vs clarity
-THUMB_W       = 640  # resize before encoding — cuts payload ~4x vs 1280px
-THUMB_H       = 360
+THUMB_EVERY  = 5     # push every Nth processed frame (~1-2 FPS to dashboard)
+THUMB_QUALITY = 55   # JPEG quality 0-100 — lower = smaller, faster network transfer
 
-_push_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="frame-push")
+_push_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="frame-push")
 
 
 def _push_frame(plant_id: str, frame_bgr) -> None:
-    """Fire-and-forget: resize, encode frame as JPEG and POST it to the backend."""
+    """Fire-and-forget: encode frame as JPEG and POST it to the backend."""
     if not BACKEND_URL:
         return
-    small = cv2.resize(frame_bgr, (THUMB_W, THUMB_H), interpolation=cv2.INTER_LINEAR)
-    ok, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, THUMB_QUALITY])
+    ok, buf = cv2.imencode(".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, THUMB_QUALITY])
     if not ok:
         return
     b64 = base64.b64encode(buf.tobytes()).decode()
@@ -186,45 +183,6 @@ def _in_roi(cx: float, cy: float, roi: dict) -> bool:
             roi["y"] <= cy <= roi["y"] + roi["h"])
 
 
-def _suppress_overlapping_tracks(
-    track_results: list[tuple[int, list]],
-    iou_threshold: float = 0.30,
-    iomin_threshold: float = 0.50,
-) -> list[tuple[int, list]]:
-    """Remove duplicate track IDs caused by one object getting multiple detections.
-
-    Two checks (older ID always wins):
-    1. IoU > iou_threshold   — boxes overlap significantly
-    2. IoMin > iomin_threshold — one box is mostly contained inside the other
-       (catches small fragment detections inside a large leather-piece box)
-    """
-    if len(track_results) <= 1:
-        return track_results
-    sorted_tracks = sorted(track_results, key=lambda x: x[0])
-    kept: list[tuple[int, list]] = []
-    suppressed: set[int] = set()
-    for i, (tid_i, box_i) in enumerate(sorted_tracks):
-        if tid_i in suppressed:
-            continue
-        kept.append((tid_i, box_i))
-        for tid_j, box_j in sorted_tracks[i + 1:]:
-            if tid_j in suppressed:
-                continue
-            # Standard IoU check
-            if SimpleIoUTracker._iou(box_i, box_j) > iou_threshold:
-                suppressed.add(tid_j)
-                continue
-            # Containment check: intersection / min-area
-            ix1 = max(box_i[0], box_j[0]); iy1 = max(box_i[1], box_j[1])
-            ix2 = min(box_i[2], box_j[2]); iy2 = min(box_i[3], box_j[3])
-            inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
-            area_i = max(1.0, (box_i[2] - box_i[0]) * (box_i[3] - box_i[1]))
-            area_j = max(1.0, (box_j[2] - box_j[0]) * (box_j[3] - box_j[1]))
-            if inter / min(area_i, area_j) > iomin_threshold:
-                suppressed.add(tid_j)
-    return kept
-
-
 # ── Data classes ───────────────────────────────────────────────────────────
 
 @dataclass
@@ -283,7 +241,7 @@ class RunSummary:
 # already-active track.
 
 class SimpleIoUTracker:
-    def __init__(self, iou_thresh: float = 0.25, max_age: int = 5):
+    def __init__(self, iou_thresh: float = 0.25, max_age: int = 20):
         self.iou_thresh = iou_thresh  # min IoU to link a detection to an existing track
         self.max_age    = max_age     # frames before an unmatched track is deleted
         self._next_id   = 1
@@ -373,6 +331,46 @@ class RoiCounter:
         return len(self.counted_ids)
 
 
+def _suppress_overlapping_tracks(
+    track_results: list[tuple[int, list]],
+    iou_threshold: float = 0.30,
+    iomin_threshold: float = 0.50,
+) -> list[tuple[int, list]]:
+    """Remove duplicate track IDs caused by one object getting multiple detections.
+
+    Two checks (older ID always wins):
+    1. IoU > iou_threshold   — boxes overlap significantly (side-by-side duplicates)
+    2. IoMin > iomin_threshold — one box is mostly contained inside the other
+       (small fragment box inside a large leather-piece box; IoU is low but
+        intersection / min-area is high)
+    """
+    if len(track_results) <= 1:
+        return track_results
+    sorted_tracks = sorted(track_results, key=lambda x: x[0])
+    kept: list[tuple[int, list]] = []
+    suppressed: set[int] = set()
+    for i, (tid_i, box_i) in enumerate(sorted_tracks):
+        if tid_i in suppressed:
+            continue
+        kept.append((tid_i, box_i))
+        for tid_j, box_j in sorted_tracks[i + 1:]:
+            if tid_j in suppressed:
+                continue
+            # Standard IoU check
+            if SimpleIoUTracker._iou(box_i, box_j) > iou_threshold:
+                suppressed.add(tid_j)
+                continue
+            # Containment check: intersection / min-area
+            ix1 = max(box_i[0], box_j[0]); iy1 = max(box_i[1], box_j[1])
+            ix2 = min(box_i[2], box_j[2]); iy2 = min(box_i[3], box_j[3])
+            inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+            area_i = max(1.0, (box_i[2] - box_i[0]) * (box_i[3] - box_i[1]))
+            area_j = max(1.0, (box_j[2] - box_j[0]) * (box_j[3] - box_j[1]))
+            if inter / min(area_i, area_j) > iomin_threshold:
+                suppressed.add(tid_j)
+    return kept
+
+
 # ── Core inference loop ────────────────────────────────────────────────────
 
 def _reset_track_state(model: YOLO) -> None:
@@ -394,7 +392,8 @@ def run_video(model: YOLO, video_source, unit: str,
               max_seconds: Optional[float] = None,
               record: bool = False,
               unit_configs: Optional[dict] = None,
-              display_name: Optional[str] = None) -> tuple[VideoStats, bool, bool]:
+              display_name: Optional[str] = None,
+              writer: Optional["cv2.VideoWriter"] = None) -> tuple[VideoStats, bool, bool]:
 
     is_stream = isinstance(video_source, str) and _is_stream_url(video_source)
     cap_arg   = video_source if is_stream else str(video_source)
@@ -429,16 +428,20 @@ def run_video(model: YOLO, video_source, unit: str,
     # ─────────────────────────────────────────────────────────────────────────
 
     counter           = RoiCounter()
-    tracker           = SimpleIoUTracker(iou_thresh=0.25, max_age=5)
+    tracker           = SimpleIoUTracker(iou_thresh=0.25, max_age=20)
     sx, sy            = DISPLAY_W / frame_w, DISPLAY_H / frame_h
 
-    writer   = None
-    rec_path = None
-    if record:
+    # If the caller passed a writer, this video appends to that shared
+    # (session-wide) recording and must NOT release it here. Only create —
+    # and own — a per-video writer when no shared writer was supplied.
+    own_writer = False
+    rec_path   = None
+    if record and writer is None:
         REC_DIR.mkdir(parents=True, exist_ok=True)
         safe_name = Path(name).stem.replace(" ", "_") or unit
         rec_path  = REC_DIR / f"{unit}_{safe_name}.mp4"
         writer    = cv2.VideoWriter(str(rec_path), cv2.VideoWriter_fourcc(*"mp4v"), REC_FPS, (DISPLAY_W, DISPLAY_H))
+        own_writer = True
         print(f"  Recording → {rec_path.name}")
 
     inference_times: list[float] = []
@@ -497,7 +500,7 @@ def run_video(model: YOLO, video_source, unit: str,
         result     = results[0]
         boxes_xyxy = result.boxes.xyxy.cpu().numpy().tolist() if result.boxes is not None and len(result.boxes) > 0 else []
 
-        track_results   = _suppress_overlapping_tracks(tracker.update(boxes_xyxy))
+        track_results   = _suppress_overlapping_tracks(tracker.update(boxes_xyxy))   # [(tid, box), ...]
         debug_tracks: list[dict] = []
         counted_ids_now: set[int] = set()
         roi_ids: list[int] = []
@@ -664,7 +667,7 @@ def run_video(model: YOLO, video_source, unit: str,
         # ──────────────────────────────────────────────────────────────────────
 
     cap.release()
-    if writer:
+    if own_writer and writer:
         writer.release()
         print(f"  Saved → {rec_path}")
 
@@ -744,16 +747,33 @@ def run_single(model: YOLO, record: bool = False, unit: Optional[str] = None,
                 f"to an RTSP URL, a video file, or a folder containing .mp4 files."
             )
 
+        # One continuous recording for the whole session — spans every video
+        # for this unit and is only saved when the user quits (ESC) or all
+        # sources finish. Prevents per-video files overwriting each other.
+        session_writer   = None
+        session_rec_path = None
+        if record:
+            REC_DIR.mkdir(parents=True, exist_ok=True)
+            ts               = time.strftime("%Y%m%d_%H%M%S")
+            session_rec_path = REC_DIR / f"{unit}_session_{ts}.mp4"
+            session_writer   = cv2.VideoWriter(str(session_rec_path), cv2.VideoWriter_fourcc(*"mp4v"), REC_FPS, (DISPLAY_W, DISPLAY_H))
+            print(f"  Recording (whole session) → {session_rec_path.name}")
+
         i = 0
         while i < len(sources):
             source = sources[i]
             label  = str(source) if _is_stream_url(str(source)) else Path(str(source)).name
             print(f"Source: {label}  |  Unit: {unit} → {UNIT_MAP.get(unit, unit)}  |  Q=next  W=back  ESC=quit")
             _, aborted, go_back = run_video(model, source, unit=unit, record=record,
-                                            unit_configs=unit_configs, max_seconds=max_seconds)
+                                            unit_configs=unit_configs, max_seconds=max_seconds,
+                                            writer=session_writer)
             if aborted:
                 break
             i = max(0, i - 1) if go_back else i + 1
+
+        if session_writer:
+            session_writer.release()
+            print(f"  Saved session recording → {session_rec_path}")
 
     cv2.destroyAllWindows()
 

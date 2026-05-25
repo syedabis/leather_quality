@@ -34,7 +34,14 @@ import requests
 import torch
 from ultralytics import YOLO
 
+from app.db.connection import get_connection
 from app.db.frame_processor import FrameProcessor
+
+# ── RTSP stream stability — force TCP transport so UDP packet loss can't
+#    cause "Duplicate POC" / "Could not find ref" decoder errors.
+#    Must be set before any cv2.VideoCapture() call.
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|buffer_size;65536|max_delay;500000|reorder_queue_size;0"
+os.environ["OPENCV_LOG_LEVEL"] = "SILENT"   # suppress FFmpeg decoder warnings in terminal
 
 # ── GPU / device ───────────────────────────────────────────────────────────
 DEVICE   = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -48,7 +55,7 @@ CFG_FILE    = BASE / "unit_configs.json"
 
 # ── Inference config ───────────────────────────────────────────────────────
 TARGET_FPS       = 5
-CONF             = 0.15
+CONF             = 0.85
 IDLE_TIMEOUT_SEC        = 30   # default — overridden at startup from DB SystemSettings
 DOWNTIME_THRESHOLD_SEC  = 300  # default — overridden at startup from DB SystemSettings
 
@@ -350,10 +357,14 @@ def _plant_worker(
 
     src_index = 0
 
+    reconnect_delay = 2   # seconds; doubles on each failure, capped at 30s
+
     while not stop_event.is_set() and src_index < len(sources):
-        source   = sources[src_index]
+        source    = sources[src_index]
         is_stream = isinstance(source, str) and _is_stream_url(str(source))
-        cap      = cv2.VideoCapture(str(source))
+        # CAP_FFMPEG picks up the OPENCV_FFMPEG_CAPTURE_OPTIONS env var (TCP transport)
+        cap = cv2.VideoCapture(str(source), cv2.CAP_FFMPEG)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # keep buffer minimal — fresher frames
 
         if not cap.isOpened():
             print(f"[{unit}] Could not open source: {source}")
@@ -370,13 +381,22 @@ def _plant_worker(
         dynamic_frame_skip = frame_skip
         last_frame_time    = time.time()
         frame_num          = 0
+        read_failures      = 0
+        MAX_READ_FAILURES  = 20   # ~4s of bad frames before declaring a real disconnect
 
         print(f"[{unit}] Starting: {Path(str(source)).name if not is_stream else str(source)}")
 
         while not stop_event.is_set():
             ret, frame = cap.read()
             if not ret:
-                break
+                if is_stream:
+                    read_failures += 1
+                    if read_failures < MAX_READ_FAILURES:
+                        time.sleep(0.1)
+                        continue   # transient glitch — keep trying
+                break  # genuine disconnect or video ended
+            read_failures   = 0
+            reconnect_delay = 2   # reset backoff after a good frame
 
             frame_num += 1
             if frame_num > max_frames:
@@ -436,17 +456,17 @@ def _plant_worker(
                 utilization_pct = float(result.boxes.conf.mean().cpu().numpy()) * 100
 
             # ── DB write ───────────────────────────────────────────────────
-            # Outside shift hours: still write piece counts and belt status
-            # so the live dashboard stays fresh, but force belt_active=True
-            # so no idle_time_s or downtime_frames are accumulated.
+            # Status (belt_active) is ALWAYS the real value so the dashboard
+            # shows true Running/Idle regardless of shift. Idle time and idle
+            # sessions are only accumulated during shift hours.
             in_shift = _within_shift()
             FrameProcessor.process_frame(
                 source_note          = db_unit,
                 total_count          = total_count,
-                belt_active          = belt_active if in_shift else True,
+                belt_active          = belt_active,
                 utilization_pct      = utilization_pct,
                 piece_delta          = piece_delta,
-                frame_time_delta_s   = frame_time_delta,
+                frame_time_delta_s   = frame_time_delta if in_shift else 0,
                 idle_sessions_delta  = new_idle_session if in_shift else 0,
             )
             new_idle_session = 0
@@ -527,8 +547,9 @@ def _plant_worker(
         # Loop videos; streams restart on disconnect
         if is_stream:
             if not stop_event.is_set():
-                print(f"[{unit}] Stream disconnected, reconnecting in 2s...")
-                time.sleep(2)
+                print(f"[{unit}] Stream disconnected, reconnecting in {reconnect_delay}s...")
+                time.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, 30)  # 2 → 4 → 8 → 16 → 30s max
         else:
             src_index += 1
 

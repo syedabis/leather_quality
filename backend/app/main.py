@@ -8,7 +8,7 @@ from app.db.connection import test_connection
 from app.db.schema import initialize_schema
 from app.routers.counts import router as counts_router
 from app.routers.settings import router as settings_router
-# from app.routers.reports import router as reports_router  # TODO: requires reportlab
+from app.routers.reports import router as reports_router
 from app.routers.analytics import router as analytics_router
 from app.websocket.live import router as ws_router
 from app.websocket.plants import router as ws_plants_router
@@ -25,7 +25,7 @@ app.add_middleware(
 
 app.include_router(counts_router)
 app.include_router(settings_router)
-# app.include_router(reports_router)  # TODO: requires reportlab
+app.include_router(reports_router)
 app.include_router(analytics_router)
 app.include_router(ws_router)
 app.include_router(ws_plants_router)
