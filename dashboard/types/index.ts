@@ -24,6 +24,9 @@ export interface PlantState {
   plant_name: string;
   online: boolean;
   belt_active: boolean;
+  in_break?: boolean;
+  is_holiday?: boolean;
+  is_weekly_off?: boolean;
   total_count: number;
   session_num: number;
   session_count: number;

@@ -357,11 +357,36 @@ def create_settings_table():
         INSERT INTO dbo.SystemSettings (setting_key, setting_value) VALUES ('shift_start', '07:00');
     IF NOT EXISTS (SELECT 1 FROM dbo.SystemSettings WHERE setting_key = 'shift_end')
         INSERT INTO dbo.SystemSettings (setting_key, setting_value) VALUES ('shift_end', '17:00');
+    IF NOT EXISTS (SELECT 1 FROM dbo.SystemSettings WHERE setting_key = 'break_start_weekday')
+        INSERT INTO dbo.SystemSettings (setting_key, setting_value) VALUES ('break_start_weekday', '13:00');
+    IF NOT EXISTS (SELECT 1 FROM dbo.SystemSettings WHERE setting_key = 'break_end_weekday')
+        INSERT INTO dbo.SystemSettings (setting_key, setting_value) VALUES ('break_end_weekday', '14:00');
+    IF NOT EXISTS (SELECT 1 FROM dbo.SystemSettings WHERE setting_key = 'break_start_friday')
+        INSERT INTO dbo.SystemSettings (setting_key, setting_value) VALUES ('break_start_friday', '13:00');
+    IF NOT EXISTS (SELECT 1 FROM dbo.SystemSettings WHERE setting_key = 'break_end_friday')
+        INSERT INTO dbo.SystemSettings (setting_key, setting_value) VALUES ('break_end_friday', '14:30');
+    IF NOT EXISTS (SELECT 1 FROM dbo.SystemSettings WHERE setting_key = 'weekly_off_days')
+        INSERT INTO dbo.SystemSettings (setting_key, setting_value) VALUES ('weekly_off_days', 'Sun');
     """
     with get_connection() as conn:
         conn.execute(sql)
         conn.commit()
         conn.execute(seed_sql)
+        conn.commit()
+
+
+def create_holidays_table():
+    """Create Holidays table — one row per calendar date marked as holiday."""
+    sql = """
+    IF OBJECT_ID('dbo.Holidays', 'U') IS NULL
+    CREATE TABLE dbo.Holidays (
+        holiday_date DATE PRIMARY KEY,
+        description  NVARCHAR(255) NOT NULL DEFAULT '',
+        created_at   DATETIME2 DEFAULT GETDATE()
+    );
+    """
+    with get_connection() as conn:
+        conn.execute(sql)
         conn.commit()
 
 
@@ -390,6 +415,7 @@ def initialize_schema():
             create_sp_analytics_by_shift()
             create_settings_table()
             create_plant_targets_table()
+            create_holidays_table()
             migrate_add_last_belt_active()
             print("✅ Stored procedures refreshed.")
             return
@@ -404,6 +430,7 @@ def initialize_schema():
         create_sp_analytics_by_shift()
         create_settings_table()
         create_plant_targets_table()
+        create_holidays_table()
         print("✅ Schema initialization complete!")
     except Exception as e:
         print(f"❌ Schema initialization failed: {e}")

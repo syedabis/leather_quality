@@ -1,3 +1,4 @@
+from datetime import date as _date
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from app.db.connection import get_connection
@@ -19,6 +20,16 @@ class SettingsUpdate(BaseModel):
     downtime_threshold_sec: int = Field(..., ge=30, le=7200)
     shift_start: str = Field("07:00")
     shift_end: str = Field("17:00")
+    break_start_weekday: str = Field("13:00")
+    break_end_weekday:   str = Field("14:00")
+    break_start_friday:  str = Field("13:00")
+    break_end_friday:    str = Field("14:30")
+    weekly_off_days:     str = Field("Sun", description="CSV of 3-letter weekday names, e.g. 'Sun' or 'Sat,Sun'")
+
+
+class HolidayCreate(BaseModel):
+    date:        str          = Field(..., description="YYYY-MM-DD")
+    description: str = Field("", max_length=255)
 
 
 @router.get("")
@@ -40,6 +51,11 @@ def update_settings(body: SettingsUpdate):
         ("downtime_threshold_sec", str(body.downtime_threshold_sec)),
         ("shift_start",            body.shift_start),
         ("shift_end",              body.shift_end),
+        ("break_start_weekday",    body.break_start_weekday),
+        ("break_end_weekday",      body.break_end_weekday),
+        ("break_start_friday",     body.break_start_friday),
+        ("break_end_friday",       body.break_end_friday),
+        ("weekly_off_days",        body.weekly_off_days),
     ]
     try:
         with get_connection() as conn:
@@ -79,5 +95,87 @@ def clear_database():
                     pass
             conn.commit()
         return {"status": "ok", "cleared": cleared}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+# ── Holidays ──────────────────────────────────────────────────────────────────
+
+def _ensure_holidays_table(cur) -> None:
+    """Safety net: create dbo.Holidays if it isn't there yet (e.g. on older DBs)."""
+    cur.execute(
+        """
+        IF OBJECT_ID('dbo.Holidays', 'U') IS NULL
+        CREATE TABLE dbo.Holidays (
+            holiday_date DATE PRIMARY KEY,
+            description  NVARCHAR(255) NOT NULL DEFAULT '',
+            created_at   DATETIME2 DEFAULT GETDATE()
+        );
+        """
+    )
+
+
+@router.get("/holidays")
+def list_holidays():
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            _ensure_holidays_table(cur)
+            cur.execute(
+                "SELECT CONVERT(varchar(10), holiday_date, 23), description "
+                "FROM dbo.Holidays ORDER BY holiday_date DESC"
+            )
+            rows = [{"date": r[0], "description": r[1] or ""} for r in cur.fetchall()]
+        return rows
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.post("/holidays")
+def add_holiday(body: HolidayCreate):
+    # Validate YYYY-MM-DD
+    try:
+        _date.fromisoformat(body.date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            _ensure_holidays_table(cur)
+            cur.execute(
+                """
+                MERGE dbo.Holidays AS target
+                USING (SELECT CAST(? AS DATE) AS holiday_date, ? AS description) AS src
+                    ON target.holiday_date = src.holiday_date
+                WHEN MATCHED THEN
+                    UPDATE SET description = src.description
+                WHEN NOT MATCHED THEN
+                    INSERT (holiday_date, description) VALUES (src.holiday_date, src.description);
+                """,
+                (body.date, body.description),
+            )
+            conn.commit()
+        return {"status": "ok", "date": body.date, "description": body.description}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.delete("/holidays/{holiday_date}")
+def delete_holiday(holiday_date: str):
+    try:
+        _date.fromisoformat(holiday_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            _ensure_holidays_table(cur)
+            cur.execute("DELETE FROM dbo.Holidays WHERE holiday_date = ?", (holiday_date,))
+            conn.commit()
+        return {"status": "ok", "date": holiday_date}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))

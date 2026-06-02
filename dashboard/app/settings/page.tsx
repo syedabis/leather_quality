@@ -2,7 +2,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useUser } from '@clerk/nextjs';
 import { motion } from 'framer-motion';
-import { FiCamera, FiCheck, FiAlertCircle, FiUser, FiMail, FiShield, FiSliders, FiTrash2 } from 'react-icons/fi';
+import { FiCamera, FiCheck, FiAlertCircle, FiUser, FiMail, FiShield, FiSliders, FiTrash2, FiCalendar, FiPlus, FiCoffee } from 'react-icons/fi';
 import { API_URL } from '../../lib/constants';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -33,24 +33,51 @@ export default function Settings() {
   const [downtimeThreshold,  setDowntimeThreshold]  = useState(300);
   const [shiftStart,         setShiftStart]         = useState('07:00');
   const [shiftEnd,           setShiftEnd]           = useState('17:00');
+  const [breakStartWeekday,  setBreakStartWeekday]  = useState('13:00');
+  const [breakEndWeekday,    setBreakEndWeekday]    = useState('14:00');
+  const [breakStartFriday,   setBreakStartFriday]   = useState('13:00');
+  const [breakEndFriday,     setBreakEndFriday]     = useState('14:30');
+  const [weeklyOffDays,      setWeeklyOffDays]      = useState<string[]>(['Sun']);
   const [settingsSaving,     setSettingsSaving]      = useState(false);
   const [settingsStatus,     setSettingsStatus]      = useState<'idle' | 'success' | 'error'>('idle');
   const [clearConfirm,    setClearConfirm]    = useState(false);
   const [clearing,        setClearing]        = useState(false);
   const [clearStatus,     setClearStatus]     = useState<'idle' | 'success' | 'error'>('idle');
 
+  // Holidays state
+  const [holidays,           setHolidays]            = useState<{date: string; description: string}[]>([]);
+  const [newHolidayDate,     setNewHolidayDate]      = useState('');
+  const [newHolidayDesc,     setNewHolidayDesc]      = useState('');
+  const [holidayBusy,        setHolidayBusy]         = useState(false);
+  const [holidayStatus,      setHolidayStatus]       = useState<'idle' | 'success' | 'error'>('idle');
+
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // Load system settings on mount
+  // Load system settings + holidays on mount
   useEffect(() => {
-    fetch(`${API_URL}/api/settings`)
+    fetch(`${API_URL}/api/settings`, { cache: 'no-store' })
       .then(r => r.json())
       .then(data => {
         if (data.idle_timeout_sec)        setIdleTimeout(Number(data.idle_timeout_sec));
         if (data.downtime_threshold_sec)  setDowntimeThreshold(Number(data.downtime_threshold_sec));
         if (data.shift_start)             setShiftStart(data.shift_start);
         if (data.shift_end)               setShiftEnd(data.shift_end);
+        if (data.break_start_weekday)     setBreakStartWeekday(data.break_start_weekday);
+        if (data.break_end_weekday)       setBreakEndWeekday(data.break_end_weekday);
+        if (data.break_start_friday)      setBreakStartFriday(data.break_start_friday);
+        if (data.break_end_friday)        setBreakEndFriday(data.break_end_friday);
+        if (typeof data.weekly_off_days === 'string') {
+          const parsed = data.weekly_off_days
+            .split(',')
+            .map((d: string) => d.trim())
+            .filter(Boolean);
+          setWeeklyOffDays(parsed.length ? parsed : ['Sun']);
+        }
       })
+      .catch(() => {});
+    fetch(`${API_URL}/api/settings/holidays`, { cache: 'no-store' })
+      .then(r => r.ok ? r.json() : [])
+      .then(setHolidays)
       .catch(() => {});
   }, []);
 
@@ -61,7 +88,17 @@ export default function Settings() {
       const res = await fetch(`${API_URL}/api/settings`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ idle_timeout_sec: idleTimeout, downtime_threshold_sec: downtimeThreshold, shift_start: shiftStart, shift_end: shiftEnd }),
+        body: JSON.stringify({
+          idle_timeout_sec:       idleTimeout,
+          downtime_threshold_sec: downtimeThreshold,
+          shift_start:            shiftStart,
+          shift_end:              shiftEnd,
+          break_start_weekday:    breakStartWeekday,
+          break_end_weekday:      breakEndWeekday,
+          break_start_friday:     breakStartFriday,
+          break_end_friday:       breakEndFriday,
+          weekly_off_days:        weeklyOffDays.join(','),
+        }),
       });
       if (!res.ok) throw new Error('Failed to save');
       setSettingsStatus('success');
@@ -71,7 +108,44 @@ export default function Settings() {
       setSettingsSaving(false);
       setTimeout(() => setSettingsStatus('idle'), 3000);
     }
-  }, [idleTimeout, downtimeThreshold, shiftStart, shiftEnd]);
+  }, [idleTimeout, downtimeThreshold, shiftStart, shiftEnd, breakStartWeekday, breakEndWeekday, breakStartFriday, breakEndFriday, weeklyOffDays]);
+
+  const handleAddHoliday = useCallback(async () => {
+    if (!newHolidayDate) return;
+    setHolidayBusy(true);
+    setHolidayStatus('idle');
+    try {
+      const res = await fetch(`${API_URL}/api/settings/holidays`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: newHolidayDate, description: newHolidayDesc }),
+      });
+      if (!res.ok) throw new Error('Failed');
+      const refreshed = await fetch(`${API_URL}/api/settings/holidays`, { cache: 'no-store' }).then(r => r.json());
+      setHolidays(refreshed);
+      setNewHolidayDate('');
+      setNewHolidayDesc('');
+      setHolidayStatus('success');
+    } catch {
+      setHolidayStatus('error');
+    } finally {
+      setHolidayBusy(false);
+      setTimeout(() => setHolidayStatus('idle'), 3000);
+    }
+  }, [newHolidayDate, newHolidayDesc]);
+
+  const handleDeleteHoliday = useCallback(async (date: string) => {
+    setHolidayBusy(true);
+    try {
+      await fetch(`${API_URL}/api/settings/holidays/${date}`, { method: 'DELETE' });
+      setHolidays(prev => prev.filter(h => h.date !== date));
+    } catch {
+      setHolidayStatus('error');
+      setTimeout(() => setHolidayStatus('idle'), 3000);
+    } finally {
+      setHolidayBusy(false);
+    }
+  }, []);
 
   const handleClearDatabase = useCallback(async () => {
     setClearing(true);
@@ -390,6 +464,89 @@ export default function Settings() {
                 </div>
               </div>
 
+              {/* Break Times */}
+              <div>
+                <label className="block text-xs text-gray-500 font-medium mb-1 flex items-center gap-1.5">
+                  <FiCoffee className="w-3.5 h-3.5 text-[#2AAA8A]" /> Break Times
+                </label>
+                <p className="text-[11px] text-gray-400 mb-2">
+                  Break time is excluded from idle-time accumulation. Friday has a different window by default.
+                  Inference picks up changes within a few minutes — no restart needed.
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[10px] text-gray-400 mb-1">Weekday Break Start (Mon–Thu, Sat, Sun)</label>
+                    <input
+                      type="time"
+                      value={breakStartWeekday}
+                      onChange={e => setBreakStartWeekday(e.target.value)}
+                      className="w-full px-3 py-2 text-sm bg-gray-50 dark:bg-[#111111] border border-gray-200 dark:border-[#2c2c2c] rounded-xl
+                        text-gray-900 dark:text-white focus:outline-none focus:border-[#2AAA8A] transition-all"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-gray-400 mb-1">Weekday Break End</label>
+                    <input
+                      type="time"
+                      value={breakEndWeekday}
+                      onChange={e => setBreakEndWeekday(e.target.value)}
+                      className="w-full px-3 py-2 text-sm bg-gray-50 dark:bg-[#111111] border border-gray-200 dark:border-[#2c2c2c] rounded-xl
+                        text-gray-900 dark:text-white focus:outline-none focus:border-[#2AAA8A] transition-all"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-gray-400 mb-1">Friday Break Start</label>
+                    <input
+                      type="time"
+                      value={breakStartFriday}
+                      onChange={e => setBreakStartFriday(e.target.value)}
+                      className="w-full px-3 py-2 text-sm bg-gray-50 dark:bg-[#111111] border border-gray-200 dark:border-[#2c2c2c] rounded-xl
+                        text-gray-900 dark:text-white focus:outline-none focus:border-[#2AAA8A] transition-all"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-gray-400 mb-1">Friday Break End</label>
+                    <input
+                      type="time"
+                      value={breakEndFriday}
+                      onChange={e => setBreakEndFriday(e.target.value)}
+                      className="w-full px-3 py-2 text-sm bg-gray-50 dark:bg-[#111111] border border-gray-200 dark:border-[#2c2c2c] rounded-xl
+                        text-gray-900 dark:text-white focus:outline-none focus:border-[#2AAA8A] transition-all"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Weekly Off Days */}
+              <div>
+                <label className="block text-xs text-gray-500 font-medium mb-1">Weekly Off Days</label>
+                <p className="text-[11px] text-gray-400 mb-2">
+                  On these weekdays, every plant is treated as off — no piece counting, no active time, no idle time.
+                  Floor View shows them as &ldquo;Offline &middot; Day Off&rdquo;. Evaluated once when the inference starts.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d => {
+                    const checked = weeklyOffDays.includes(d);
+                    return (
+                      <button
+                        key={d}
+                        type="button"
+                        onClick={() => setWeeklyOffDays(prev =>
+                          prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d]
+                        )}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors ${
+                          checked
+                            ? 'bg-[#2AAA8A] border-[#2AAA8A] text-white'
+                            : 'bg-gray-50 dark:bg-[#111111] border-gray-200 dark:border-[#2c2c2c] text-gray-600 dark:text-gray-300 hover:border-[#2AAA8A]/40'
+                        }`}
+                      >
+                        {d}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               {settingsStatus !== 'idle' && (
                 <div className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium border ${
                   settingsStatus === 'success'
@@ -411,6 +568,100 @@ export default function Settings() {
                 {settingsSaving ? 'Saving…' : 'Save Settings'}
               </button>
             </div>
+          </motion.div>
+        )}
+
+        {/* ── Holidays (admin only) ────────────────────────────────────── */}
+        {role === 'admin' && (
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.2 }}
+            className="bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-2xl p-6 shadow-sm"
+          >
+            <div className="flex items-center gap-2 mb-4">
+              <FiCalendar className="w-4 h-4 text-[#2AAA8A]" />
+              <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-widest">Holidays</p>
+            </div>
+
+            <p className="text-[11px] text-gray-400 mb-4">
+              On a holiday, the inference does not write piece counts, active time, or idle time.
+              Status indicators stay live. Inference checks this list periodically — no restart needed.
+            </p>
+
+            {/* Add new holiday */}
+            <div className="grid grid-cols-12 gap-2 mb-3">
+              <input
+                type="date"
+                value={newHolidayDate}
+                onChange={e => setNewHolidayDate(e.target.value)}
+                className="col-span-4 px-3 py-2 text-sm bg-gray-50 dark:bg-[#111111] border border-gray-200 dark:border-[#2c2c2c] rounded-xl
+                  text-gray-900 dark:text-white focus:outline-none focus:border-[#2AAA8A] transition-all"
+              />
+              <input
+                type="text"
+                placeholder="Description (e.g. Eid ul-Fitr)"
+                value={newHolidayDesc}
+                onChange={e => setNewHolidayDesc(e.target.value)}
+                className="col-span-6 px-3 py-2 text-sm bg-gray-50 dark:bg-[#111111] border border-gray-200 dark:border-[#2c2c2c] rounded-xl
+                  text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:border-[#2AAA8A] transition-all"
+              />
+              <button
+                onClick={handleAddHoliday}
+                disabled={!newHolidayDate || holidayBusy}
+                className="col-span-2 inline-flex items-center justify-center gap-1 px-3 py-2 bg-[#2AAA8A] hover:bg-[#249978] text-white text-xs font-semibold rounded-xl
+                  disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+              >
+                <FiPlus className="w-3.5 h-3.5" /> Add
+              </button>
+            </div>
+
+            {holidayStatus !== 'idle' && (
+              <div className={`flex items-center gap-2 px-3 py-2 mb-3 rounded-xl text-xs font-medium border ${
+                holidayStatus === 'success'
+                  ? 'bg-green-50 border-green-200 text-green-700'
+                  : 'bg-red-50 border-red-200 text-red-600'
+              }`}>
+                {holidayStatus === 'success'
+                  ? <><FiCheck className="w-3.5 h-3.5" /> Holiday saved</>
+                  : <><FiAlertCircle className="w-3.5 h-3.5" /> Failed</>}
+              </div>
+            )}
+
+            {/* Existing holidays */}
+            {holidays.length === 0 ? (
+              <p className="text-xs text-gray-400 italic">No holidays configured.</p>
+            ) : (
+              <div className="border border-gray-100 dark:border-[#2c2c2c] rounded-xl overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-50 dark:bg-[#111111]">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Date</th>
+                      <th className="px-3 py-2 text-left font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Description</th>
+                      <th className="px-3 py-2 w-12" />
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 dark:divide-[#2c2c2c]">
+                    {holidays.map(h => (
+                      <tr key={h.date} className="hover:bg-gray-50 dark:hover:bg-[#111111]">
+                        <td className="px-3 py-2 text-gray-900 dark:text-white font-medium">{h.date}</td>
+                        <td className="px-3 py-2 text-gray-600 dark:text-gray-300">{h.description || <span className="text-gray-400 italic">—</span>}</td>
+                        <td className="px-3 py-2 text-right">
+                          <button
+                            onClick={() => handleDeleteHoliday(h.date)}
+                            disabled={holidayBusy}
+                            className="text-red-500 hover:text-red-600 disabled:opacity-50"
+                            title="Remove"
+                          >
+                            <FiTrash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </motion.div>
         )}
 

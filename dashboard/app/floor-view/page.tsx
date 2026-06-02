@@ -55,8 +55,10 @@ function PlantCard({ plant, dayElapsedSecs, delay = 0 }: PlantCardProps) {
   const hasLot    = !!lotInfo.lot?.trim();
   const [cmPct, washPct, idlePct] = IDLE_BREAKDOWN[plant.plant_id as PlantId] ?? [33, 33, 34];
 
-  const isRunning = plant.online && plant.belt_active;
-  const isIdle    = plant.online && !plant.belt_active;
+  // Break window (from backend) takes visual precedence over Running/Idle.
+  const isBreak   = plant.online && !!plant.in_break;
+  const isRunning = plant.online && plant.belt_active && !isBreak;
+  const isIdle    = plant.online && !plant.belt_active && !isBreak;
 
   const activeHrs = fmtDuration(plant.runtime_s);
   const idleHrs   = fmtDuration(plant.idle_s);
@@ -91,6 +93,11 @@ function PlantCard({ plant, dayElapsedSecs, delay = 0 }: PlantCardProps) {
 
       {/* Status badge */}
       <div className="px-3 pb-2">
+        {isBreak && (
+          <span className="bg-[#8B5CF6] text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full">
+            Break
+          </span>
+        )}
         {isRunning && (
           <span className="bg-[#22C55E] text-black text-[10px] font-bold px-2.5 py-0.5 rounded-full">
             Running
@@ -101,7 +108,23 @@ function PlantCard({ plant, dayElapsedSecs, delay = 0 }: PlantCardProps) {
             Idle
           </span>
         )}
-        {!plant.online && (
+        {!plant.online && plant.is_holiday && (
+          <span
+            title="Today is a configured holiday — inference is not writing data."
+            className="bg-[#3B82F6] text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full"
+          >
+            Offline · Holiday
+          </span>
+        )}
+        {!plant.online && !plant.is_holiday && plant.is_weekly_off && (
+          <span
+            title="Today is a configured weekly off-day — inference is not writing data."
+            className="bg-[#6366F1] text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full"
+          >
+            Offline · Day Off
+          </span>
+        )}
+        {!plant.online && !plant.is_holiday && !plant.is_weekly_off && (
           <span className="bg-gray-700 text-gray-300 text-[10px] font-bold px-2.5 py-0.5 rounded-full">
             Offline
           </span>

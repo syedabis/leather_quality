@@ -173,6 +173,89 @@ def get_summary(unit: str | None = None,
 _FRESH_WINDOW_S = 30
 
 
+def _is_weekly_off_today() -> bool:
+    """True if today's weekday is in the configured weekly_off_days setting.
+
+    Setting value is a CSV of 3-letter weekday names, e.g. 'Sun' or 'Sat,Sun'.
+    Defaults to 'Sun' if the setting is missing.
+    """
+    from datetime import datetime
+    csv = "Sun"
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT setting_value FROM dbo.SystemSettings WHERE setting_key = 'weekly_off_days'"
+            )
+            row = cur.fetchone()
+            if row and row[0]:
+                csv = row[0]
+    except Exception:
+        pass
+    today_abbrev = datetime.now().strftime("%a")   # 'Sun', 'Mon', ...
+    return today_abbrev in {d.strip() for d in csv.split(",") if d.strip()}
+
+
+def _is_holiday_today() -> bool:
+    """True if today's date is present in dbo.Holidays.
+
+    Silently returns False if the Holidays table doesn't exist yet (older DB).
+    """
+    from datetime import date as _date
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT 1 FROM dbo.Holidays WHERE holiday_date = CAST(? AS DATE)",
+                (str(_date.today()),),
+            )
+            return cur.fetchone() is not None
+    except Exception:
+        return False
+
+
+def _in_break_now() -> bool:
+    """True if server-clock time is inside the configured break window.
+
+    Reads break_start/end_weekday/friday from SystemSettings (with safe
+    fallbacks). Friday uses its own window.
+    """
+    from datetime import datetime
+    defaults = {
+        "break_start_weekday": "13:00",
+        "break_end_weekday":   "14:00",
+        "break_start_friday":  "13:00",
+        "break_end_friday":    "14:30",
+    }
+    s = dict(defaults)
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT setting_key, setting_value FROM dbo.SystemSettings "
+                "WHERE setting_key IN ('break_start_weekday','break_end_weekday',"
+                "'break_start_friday','break_end_friday')"
+            )
+            for k, v in cur.fetchall():
+                if v:
+                    s[k] = v
+    except Exception:
+        pass
+    now = datetime.now()
+    if now.weekday() == 4:           # Friday
+        start_s, end_s = s["break_start_friday"], s["break_end_friday"]
+    else:
+        start_s, end_s = s["break_start_weekday"], s["break_end_weekday"]
+    def _to_min(t: str) -> int:
+        try:
+            hh, mm = t.split(":")
+            return int(hh) * 60 + int(mm)
+        except Exception:
+            return 0
+    now_min = now.hour * 60 + now.minute
+    return _to_min(start_s) <= now_min < _to_min(end_s)
+
+
 def get_plant_states() -> list[dict]:
     """
     Returns a WsFrameMessage-shaped dict for every unit.
@@ -184,6 +267,9 @@ def get_plant_states() -> list[dict]:
     from the last seen row (so KPI tiles keep their final value but the live
     Running indicator stops blinking).
     """
+    in_break       = _in_break_now()
+    is_holiday     = _is_holiday_today()
+    is_weekly_off  = _is_weekly_off_today()
     # Sum ALL of today's hour buckets per unit so runtime/idle accumulate
     # across hour boundaries. staleness is based on the most-recent write.
     sql = """
@@ -233,6 +319,9 @@ def get_plant_states() -> list[dict]:
                 "plant_name":    PLANT_NAMES.get(unit, unit),
                 "online":        False,
                 "belt_active":   False,
+                "in_break":      in_break,
+                "is_holiday":    is_holiday,
+                "is_weekly_off": is_weekly_off,
                 "total_count":   0,
                 "session_count": 0,
                 "session_num":   0,
@@ -266,6 +355,9 @@ def get_plant_states() -> list[dict]:
             "plant_name":    PLANT_NAMES.get(unit, unit),
             "online":        is_fresh,
             "belt_active":   belt_active,
+            "in_break":      in_break,
+            "is_holiday":    is_holiday,
+            "is_weekly_off": is_weekly_off,
             "total_count":   piece_count or 0,
             "session_count": idle_sessions or 0,
             "session_num":   idle_sessions or 0,

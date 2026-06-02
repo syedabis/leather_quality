@@ -16,6 +16,10 @@ services:
       DB_NAME: ${DB_NAME:-nEXP1314}
       DB_USER: ${DB_USER:-dadasa}
       DB_PASSWORD: ${DB_PASSWORD}
+      # Container default is UTC. Force the local plant timezone so
+      # datetime.now() (used for break-window / holiday / off-day checks)
+      # matches the inference machine and SQL Server clocks.
+      TZ: ${TZ:-Asia/Karachi}
     networks:
       - spray-net
     healthcheck:

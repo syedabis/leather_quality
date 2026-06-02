@@ -38,7 +38,153 @@ import requests
 import torch
 from ultralytics import YOLO
 
+from app.db.connection import get_connection
 from app.db.frame_processor import FrameProcessor
+
+
+# ── Shift / break / holiday helpers (mirror run_all_plants.py) ─────────────
+
+_shift_start = "07:00"
+_shift_end   = "17:00"
+
+_break_start_weekday = "13:00"
+_break_end_weekday   = "14:00"
+_break_start_friday  = "13:00"
+_break_end_friday    = "14:30"
+
+_dynamic_refresh_interval_s = 300
+_dynamic_last_refresh_ts    = 0.0
+_holiday_today_cached       = False
+_holiday_checked_at_startup = False
+
+_weekly_off_days_csv        = "Sun"
+_weekly_off_today_cached    = False
+_weekly_off_checked_at_startup = False
+
+
+def _load_settings_once() -> None:
+    """Seed shift + break-time + weekly-off module state from DB on startup."""
+    global _shift_start, _shift_end
+    global _break_start_weekday, _break_end_weekday, _break_start_friday, _break_end_friday
+    global _weekly_off_days_csv
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT setting_key, setting_value FROM dbo.SystemSettings")
+            s = {r[0]: r[1] for r in cur.fetchall()}
+        if s.get("shift_start"):          _shift_start          = s["shift_start"]
+        if s.get("shift_end"):            _shift_end            = s["shift_end"]
+        if s.get("break_start_weekday"):  _break_start_weekday  = s["break_start_weekday"]
+        if s.get("break_end_weekday"):    _break_end_weekday    = s["break_end_weekday"]
+        if s.get("break_start_friday"):   _break_start_friday   = s["break_start_friday"]
+        if s.get("break_end_friday"):     _break_end_friday     = s["break_end_friday"]
+        if s.get("weekly_off_days"):      _weekly_off_days_csv  = s["weekly_off_days"]
+    except Exception as e:
+        print(f"[settings] Could not read SystemSettings, using defaults: {e}")
+
+
+def _parse_hhmm_to_min(s: str) -> int:
+    try:
+        h, m = s.split(":")
+        return int(h) * 60 + int(m)
+    except Exception:
+        return 0
+
+
+def _within_shift() -> bool:
+    now = time.strftime("%H:%M")
+    return _shift_start <= now <= _shift_end
+
+
+def _in_break() -> bool:
+    now = time.localtime()
+    now_min = now.tm_hour * 60 + now.tm_min
+    if now.tm_wday == 4:           # Friday
+        start_s, end_s = _break_start_friday, _break_end_friday
+    else:
+        start_s, end_s = _break_start_weekday, _break_end_weekday
+    return _parse_hhmm_to_min(start_s) <= now_min < _parse_hhmm_to_min(end_s)
+
+
+def _refresh_dynamic_state() -> None:
+    """Re-read break-time settings from DB every 5 min (failure-tolerant)."""
+    global _dynamic_last_refresh_ts
+    global _break_start_weekday, _break_end_weekday, _break_start_friday, _break_end_friday
+    now_ts = time.time()
+    if now_ts - _dynamic_last_refresh_ts < _dynamic_refresh_interval_s:
+        return
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT setting_key, setting_value FROM dbo.SystemSettings "
+                "WHERE setting_key IN ('break_start_weekday','break_end_weekday',"
+                "'break_start_friday','break_end_friday')"
+            )
+            s = {r[0]: r[1] for r in cur.fetchall()}
+            if s.get("break_start_weekday"): _break_start_weekday = s["break_start_weekday"]
+            if s.get("break_end_weekday"):   _break_end_weekday   = s["break_end_weekday"]
+            if s.get("break_start_friday"):  _break_start_friday  = s["break_start_friday"]
+            if s.get("break_end_friday"):    _break_end_friday    = s["break_end_friday"]
+            _dynamic_last_refresh_ts = now_ts
+    except Exception as e:
+        print(f"[dynamic] refresh failed (keeping previous values): {e}")
+
+
+def _check_holiday_at_startup() -> None:
+    """One-shot holiday check. Result is frozen for the run."""
+    global _holiday_today_cached, _holiday_checked_at_startup
+    if _holiday_checked_at_startup:
+        return
+    today = time.strftime("%Y-%m-%d")
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT description FROM dbo.Holidays WHERE holiday_date = CAST(? AS DATE)",
+                (today,),
+            )
+            row = cur.fetchone()
+            _holiday_today_cached = row is not None
+            if _holiday_today_cached:
+                desc = row[0] or "(no description)"
+                print(f"[holiday]  Today ({today}) is marked a holiday — "
+                      f"DB writes will be skipped. Reason: {desc}")
+            else:
+                print(f"[holiday]  Today ({today}) is not a holiday.")
+    except Exception as e:
+        _holiday_today_cached = False
+        print(f"[holiday]  Check failed (treating as non-holiday): {e}")
+    _holiday_checked_at_startup = True
+
+
+def _is_holiday_today() -> bool:
+    return _holiday_today_cached
+
+
+def _check_weekly_off_at_startup() -> None:
+    """One-shot weekly-off check, frozen for the lifetime of the run."""
+    global _weekly_off_today_cached, _weekly_off_checked_at_startup
+    if _weekly_off_checked_at_startup:
+        return
+    today_abbrev = time.strftime("%a")
+    off = {d.strip() for d in _weekly_off_days_csv.split(",") if d.strip()}
+    _weekly_off_today_cached = today_abbrev in off
+    if _weekly_off_today_cached:
+        print(f"[weekly]   Today is {today_abbrev} — configured as a weekly off-day. "
+              f"DB writes will be skipped.")
+    else:
+        print(f"[weekly]   Today is {today_abbrev}. Configured off-days: "
+              f"{_weekly_off_days_csv}")
+    _weekly_off_checked_at_startup = True
+
+
+def _is_weekly_off_today() -> bool:
+    return _weekly_off_today_cached
+
+
+def _is_off_today() -> bool:
+    return _is_holiday_today() or _is_weekly_off_today()
 
 # ── GPU / device selection ─────────────────────────────────────────────────
 # GTX 960 (Maxwell SM 5.2) is supported by CUDA 11.8 + PyTorch cu118.
@@ -517,19 +663,20 @@ def run_video(model: YOLO, video_source, unit: str,
         piece_delta         = len(counted_ids_now)
         total_count        += piece_delta
 
-        time_since_new_id = time.time() - last_detection_time
-        if len(counted_ids_now) > 0:
+        # Status follows ROI presence (any tracked object in ROI, new or not).
+        # Detections outside the ROI never flip the status.
+        if len(roi_ids) > 0:
             last_detection_time = time.time()
             belt_active         = True
             dynamic_frame_skip  = frame_skip
             idle_started        = None
-        elif time_since_new_id > IDLE_TIMEOUT_SEC:
+        elif time.time() - last_detection_time > IDLE_TIMEOUT_SEC:
             if not idle_started:
                 idle_started = time.time()
             belt_active        = False
             dynamic_frame_skip = frame_skip * 2   # half the rate during idle
         else:
-            belt_active        = True
+            # Hold last status during the short grace window.
             dynamic_frame_skip = frame_skip
 
         if prev_belt_active and not belt_active:
@@ -546,15 +693,23 @@ def run_video(model: YOLO, video_source, unit: str,
             if confs is not None and len(confs) > 0:
                 utilization_pct = float(confs.mean().cpu().numpy()) * 100
 
-        db_success = FrameProcessor.process_frame(
-            source_note       = db_unit,
-            total_count       = total_count,
-            belt_active       = belt_active,
-            utilization_pct   = utilization_pct,
-            piece_delta       = piece_delta,
-            frame_time_delta_s = frame_time_delta,
-            idle_sessions_delta = new_idle_session,
-        )
+        # Mirror run_all_plants.py: skip writes entirely on a holiday or
+        # weekly off-day; otherwise status is always real, and idle time /
+        # sessions only accumulate inside shift hours AND outside the break
+        # window.
+        _refresh_dynamic_state()
+        db_success = True
+        if not _is_off_today():
+            count_idle = _within_shift() and not _in_break()
+            db_success = FrameProcessor.process_frame(
+                source_note         = db_unit,
+                total_count         = total_count,
+                belt_active         = belt_active,
+                utilization_pct     = utilization_pct,
+                piece_delta         = piece_delta,
+                frame_time_delta_s  = frame_time_delta if count_idle else 0,
+                idle_sessions_delta = new_idle_session if count_idle else 0,
+            )
         new_idle_session = 0
 
         detection_counts.append(count)
@@ -929,6 +1084,15 @@ def main() -> None:
     model       = YOLO(str(model_path))
     model.to(DEVICE)   # move weights to GPU once at load time
     cap_seconds = args.max_seconds if args.max_seconds and args.max_seconds > 0 else None
+
+    # Load shift + break times once, and freeze the holiday-today flag for
+    # the rest of the run (matches run_all_plants.py behavior).
+    _load_settings_once()
+    print(f"[shift]    Counting idle/downtime between {_shift_start} – {_shift_end}")
+    print(f"[break]    Weekday {_break_start_weekday}-{_break_end_weekday} | "
+          f"Friday {_break_start_friday}-{_break_end_friday} (excluded from idle)")
+    _check_holiday_at_startup()
+    _check_weekly_off_at_startup()
 
     if args.all:
         run_all(model, max_seconds=cap_seconds, record=args.record)

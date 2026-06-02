@@ -132,7 +132,16 @@ def _push_frame(plant_id: str, frame_bgr) -> None:
 
 def _load_settings() -> dict:
     """Read SystemSettings from DB. Falls back to defaults on any error."""
-    defaults = {"idle_timeout_sec": 30, "shift_start": "07:00", "shift_end": "17:00"}
+    defaults = {
+        "idle_timeout_sec":    30,
+        "shift_start":         "07:00",
+        "shift_end":           "17:00",
+        "break_start_weekday": "13:00",
+        "break_end_weekday":   "14:00",
+        "break_start_friday":  "13:00",
+        "break_end_friday":    "14:30",
+        "weekly_off_days":     "Sun",
+    }
     try:
         with get_connection() as conn:
             cur = conn.cursor()
@@ -147,15 +156,153 @@ def _load_settings() -> dict:
     return defaults
 
 
-# ── Shift helpers ──────────────────────────────────────────────────────────
+# ── Shift / break / holiday helpers ────────────────────────────────────────
 
 _shift_start = "07:00"
 _shift_end   = "17:00"
+
+# Break window per day type (Friday differs by default). Refreshed from DB.
+_break_start_weekday = "13:00"
+_break_end_weekday   = "14:00"
+_break_start_friday  = "13:00"
+_break_end_friday    = "14:30"
+
+# Break-time periodic refresh (every 5 min). Holiday is evaluated ONCE at
+# startup — adding today to the holiday list mid-run will not retroactively
+# change the day in progress.
+_dynamic_refresh_interval_s = 300
+_dynamic_last_refresh_ts   = 0.0
+_holiday_today_cached      = False
+_holiday_checked_at_startup = False
+
+# Weekly off-days: CSV of 3-letter weekday names ('Sun' or 'Sat,Sun').
+# Frozen at startup like holidays.
+_weekly_off_days_csv       = "Sun"
+_weekly_off_today_cached   = False
+_weekly_off_checked_at_startup = False
+
+
+def _parse_hhmm_to_min(s: str) -> int:
+    try:
+        h, m = s.split(":")
+        return int(h) * 60 + int(m)
+    except Exception:
+        return 0
+
 
 def _within_shift() -> bool:
     """Returns True if current time is within the configured shift window."""
     now = time.strftime("%H:%M")
     return _shift_start <= now <= _shift_end
+
+
+def _in_break() -> bool:
+    """Returns True if current time is within the configured break window.
+
+    Friday uses the Friday break range; every other day uses the weekday range.
+    """
+    now = time.localtime()
+    now_min = now.tm_hour * 60 + now.tm_min
+    if now.tm_wday == 4:           # Friday (Monday=0 ... Sunday=6)
+        start_s, end_s = _break_start_friday, _break_end_friday
+    else:
+        start_s, end_s = _break_start_weekday, _break_end_weekday
+    return _parse_hhmm_to_min(start_s) <= now_min < _parse_hhmm_to_min(end_s)
+
+
+def _refresh_dynamic_state() -> None:
+    """Periodically re-read break-time settings from DB.
+
+    Refreshed at most once per `_dynamic_refresh_interval_s`. Failures are
+    swallowed and previous values are kept so a transient DB hiccup does not
+    disrupt the inference loop. Holiday is NOT refreshed here — see
+    `_check_holiday_at_startup`.
+    """
+    global _dynamic_last_refresh_ts
+    global _break_start_weekday, _break_end_weekday, _break_start_friday, _break_end_friday
+    now_ts = time.time()
+    if now_ts - _dynamic_last_refresh_ts < _dynamic_refresh_interval_s:
+        return
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT setting_key, setting_value FROM dbo.SystemSettings "
+                "WHERE setting_key IN ('break_start_weekday','break_end_weekday',"
+                "'break_start_friday','break_end_friday')"
+            )
+            s = {r[0]: r[1] for r in cur.fetchall()}
+            if s.get("break_start_weekday"): _break_start_weekday = s["break_start_weekday"]
+            if s.get("break_end_weekday"):   _break_end_weekday   = s["break_end_weekday"]
+            if s.get("break_start_friday"):  _break_start_friday  = s["break_start_friday"]
+            if s.get("break_end_friday"):    _break_end_friday    = s["break_end_friday"]
+            _dynamic_last_refresh_ts = now_ts
+    except Exception as e:
+        print(f"[dynamic] refresh failed (keeping previous values): {e}")
+
+
+def _check_holiday_at_startup() -> None:
+    """One-shot holiday check, evaluated when the inference launches.
+
+    Whatever value this sets persists for the lifetime of the run. Adding
+    today to the Holidays table mid-day will not retroactively flip the flag.
+    """
+    global _holiday_today_cached, _holiday_checked_at_startup
+    if _holiday_checked_at_startup:
+        return
+    today = time.strftime("%Y-%m-%d")
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT description FROM dbo.Holidays WHERE holiday_date = CAST(? AS DATE)",
+                (today,),
+            )
+            row = cur.fetchone()
+            _holiday_today_cached = row is not None
+            if _holiday_today_cached:
+                desc = row[0] or "(no description)"
+                print(f"[holiday]  Today ({today}) is marked a holiday — "
+                      f"DB writes will be skipped. Reason: {desc}")
+            else:
+                print(f"[holiday]  Today ({today}) is not a holiday.")
+    except Exception as e:
+        _holiday_today_cached = False
+        print(f"[holiday]  Check failed (treating as non-holiday): {e}")
+    _holiday_checked_at_startup = True
+
+
+def _is_holiday_today() -> bool:
+    return _holiday_today_cached
+
+
+def _check_weekly_off_at_startup() -> None:
+    """One-shot weekly-off check, evaluated when the inference launches.
+
+    Frozen for the lifetime of the run, same as the holiday flag.
+    """
+    global _weekly_off_today_cached, _weekly_off_checked_at_startup
+    if _weekly_off_checked_at_startup:
+        return
+    today_abbrev = time.strftime("%a")   # 'Sun', 'Mon', ...
+    off = {d.strip() for d in _weekly_off_days_csv.split(",") if d.strip()}
+    _weekly_off_today_cached = today_abbrev in off
+    if _weekly_off_today_cached:
+        print(f"[weekly]   Today is {today_abbrev} — configured as a weekly off-day. "
+              f"DB writes will be skipped.")
+    else:
+        print(f"[weekly]   Today is {today_abbrev}. Configured off-days: "
+              f"{_weekly_off_days_csv}")
+    _weekly_off_checked_at_startup = True
+
+
+def _is_weekly_off_today() -> bool:
+    return _weekly_off_today_cached
+
+
+def _is_off_today() -> bool:
+    """Combined: holiday OR weekly off-day."""
+    return _is_holiday_today() or _is_weekly_off_today()
 
 
 # ── Config helpers (identical to run_live_preview.py) ─────────────────────
@@ -431,18 +578,19 @@ def _plant_worker(
             total_count += piece_delta
 
             # ── Belt idle / active state ───────────────────────────────────
-            # Only reset the idle timer when a NEW piece enters the ROI.
-            # A stationary piece already counted does not reset the timer.
-            time_since_new = time.time() - last_detection_time
-            if len(counted_ids_now) > 0:
+            # Status is driven purely by ROI presence: as long as ANY tracked
+            # object sits inside the ROI, the belt is Running (new or not).
+            # Detections outside the ROI do not flip the status. Idle only
+            # triggers after IDLE_TIMEOUT_SEC of no objects in the ROI at all.
+            if len(roi_ids) > 0:
                 last_detection_time = time.time()
                 belt_active         = True
                 dynamic_frame_skip  = frame_skip
-            elif time_since_new > IDLE_TIMEOUT_SEC:
+            elif time.time() - last_detection_time > IDLE_TIMEOUT_SEC:
                 belt_active        = False
                 dynamic_frame_skip = frame_skip * 2
             else:
-                belt_active        = True
+                # In-ROI activity recent but nothing there this frame — hold last status.
                 dynamic_frame_skip = frame_skip
 
             if prev_belt_active and not belt_active:
@@ -460,15 +608,23 @@ def _plant_worker(
             # shows true Running/Idle regardless of shift. Idle time and idle
             # sessions are only accumulated during shift hours.
             in_shift = _within_shift()
-            FrameProcessor.process_frame(
-                source_note          = db_unit,
-                total_count          = total_count,
-                belt_active          = belt_active,
-                utilization_pct      = utilization_pct,
-                piece_delta          = piece_delta,
-                frame_time_delta_s   = frame_time_delta if in_shift else 0,
-                idle_sessions_delta  = new_idle_session if in_shift else 0,
-            )
+            # Holiday OR weekly off-day: write nothing — no pieces, no active/
+            # idle time, no idle sessions. The detector keeps running locally;
+            # the DB just isn't touched so the day shows zero in the report.
+            # Break time (configurable, Friday differs) is excluded from idle
+            # accumulation: idle time only ticks up inside shift AND outside
+            # the break window.
+            if not _is_off_today():
+                count_idle = in_shift and not _in_break()
+                FrameProcessor.process_frame(
+                    source_note          = db_unit,
+                    total_count          = total_count,
+                    belt_active          = belt_active,
+                    utilization_pct      = utilization_pct,
+                    piece_delta          = piece_delta,
+                    frame_time_delta_s   = frame_time_delta if count_idle else 0,
+                    idle_sessions_delta  = new_idle_session if count_idle else 0,
+                )
             new_idle_session = 0
 
             # ── Render display frame (full original resolution) ────────────
@@ -571,13 +727,24 @@ def main() -> None:
 
     # Load settings from DB (idle timeout, shift hours, etc.)
     global IDLE_TIMEOUT_SEC, DOWNTIME_THRESHOLD_SEC, DISPLAY_W, DISPLAY_H, _shift_start, _shift_end
+    global _break_start_weekday, _break_end_weekday, _break_start_friday, _break_end_friday
+    global _weekly_off_days_csv
     settings = _load_settings()
     IDLE_TIMEOUT_SEC       = int(settings.get("idle_timeout_sec",       30))
     DOWNTIME_THRESHOLD_SEC = int(settings.get("downtime_threshold_sec", 300))
     _shift_start           = settings.get("shift_start", "07:00")
     _shift_end             = settings.get("shift_end",   "17:00")
+    _break_start_weekday   = settings.get("break_start_weekday", "13:00")
+    _break_end_weekday     = settings.get("break_end_weekday",   "14:00")
+    _break_start_friday    = settings.get("break_start_friday",  "13:00")
+    _break_end_friday      = settings.get("break_end_friday",    "14:30")
+    _weekly_off_days_csv   = settings.get("weekly_off_days",     "Sun")
     print(f"[settings] Idle timeout: {IDLE_TIMEOUT_SEC}s | Downtime threshold: {DOWNTIME_THRESHOLD_SEC}s")
     print(f"[shift]    Counting idle/downtime between {_shift_start} – {_shift_end}")
+    print(f"[break]    Weekday {_break_start_weekday}-{_break_end_weekday} | "
+          f"Friday {_break_start_friday}-{_break_end_friday} (excluded from idle)")
+    _check_holiday_at_startup()
+    _check_weekly_off_at_startup()
 
     DISPLAY_W, DISPLAY_H = _calc_window_size()
     sw, sh = _get_screen_size()
