@@ -273,7 +273,11 @@ class SessionManager:
             session_id      = db_row["session_id"],
             plant           = plant,
             session_type    = 'accounted',
-            start_time      = db_row["start_time"],
+            # Use this process's own clock (not db_row["start_time"], which is
+            # stamped by the mobile/SQL Server clock) so that grace-period math
+            # in _check_all_timers (now - ref) stays internally consistent even
+            # when the two machines' clocks are out of sync.
+            start_time      = datetime.now(),
             lot_no          = db_row["lot_no"],
             expected_pieces = db_row["expected_pieces"],
             current_count   = db_row["processed_pieces"],
