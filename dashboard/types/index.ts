@@ -19,6 +19,21 @@ export interface SessionData {
   active?: boolean;
 }
 
+export interface ActiveSession {
+  session_id:      number;
+  lot_no:          string | null;
+  plant:           string;
+  start_time:      string;          // ISO datetime from backend
+  expected_pieces: number | null;
+  current_pieces:  number;
+  type:            'accounted' | 'unaccounted';
+  order_no:        string | null;
+  article_name:    string | null;
+  colour_name:     string | null;
+  party_name:      string | null;
+  pk_code:         string | null;
+}
+
 export interface PlantState {
   plant_id: PlantId;
   plant_name: string;
@@ -39,6 +54,7 @@ export interface PlantState {
   sessions: SessionData[];
   last_updated: number;
   mock?: boolean;
+  active_session?: ActiveSession | null;
 }
 
 export interface CrossingEvent {

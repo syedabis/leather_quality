@@ -157,14 +157,11 @@ export default function Overview() {
     return base || null;
   }).filter(Boolean) as typeof plants[PlantId][];
 
-  // Live (rolling current hour) — aggregated from WS frames
-  const { lastHourPieces, avgUtil, totalRuns, maxIdleSecs, avgIdleSecs } = useMemo(() => {
+  // Live KPIs — aggregated from WS frames
+  const { avgUtil, totalRuns, maxIdleSecs, avgIdleSecs } = useMemo(() => {
     const idle = plantList.map(p => p.idle_s ?? 0);
-    // Average utilization over plants that have ever reported data (util > 0),
-    // so the KPI retains the last-known value after inference stops.
     const withData = plantList.filter(p => (p.utilization ?? 0) > 0);
     return {
-      lastHourPieces: plantList.reduce((s, p) => s + (p.total_count ?? 0), 0),
       avgUtil: withData.length
         ? Math.round(withData.reduce((s, p) => s + (p.utilization ?? 0), 0) / withData.length)
         : 0,
@@ -173,6 +170,36 @@ export default function Overview() {
       avgIdleSecs: idle.length ? Math.round(idle.reduce((a, b) => a + b, 0) / idle.length) : 0,
     };
   }, [plantList]);
+
+  // Last hour pieces — sum of all plants for the previous completed hour
+  const [lastHourPieces, setLastHourPieces] = useState(0);
+  useEffect(() => {
+    const fetchLastHour = async () => {
+      try {
+        const now = new Date();
+        const today = now.toISOString().split('T')[0];
+        const targetHour = now.getHours() > 0 ? now.getHours() - 1 : 0;
+        const results = await Promise.all(
+          PLANTS.map(p =>
+            fetch(`${API_URL}/api/analytics/by-hour?date=${today}&unit=${p.id}`)
+              .then(r => r.ok ? r.json() : [])
+              .catch(() => [])
+          )
+        );
+        const total = results.reduce((sum, rows) => {
+          const row = (rows as Array<{ hour: number; pieces?: number }>)
+            .find(r => r.hour === targetHour);
+          return sum + (row?.pieces ?? 0);
+        }, 0);
+        setLastHourPieces(total);
+      } catch {
+        // keep previous value on error
+      }
+    };
+    fetchLastHour();
+    const id = setInterval(fetchLastHour, 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   // Today's total — fetched from /api/analytics/by-day (refreshed every 60s)
   const [todayTotal, setTodayTotal] = useState(0);

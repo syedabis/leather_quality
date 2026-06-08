@@ -7,55 +7,30 @@ import { FiDownload } from 'react-icons/fi';
 import { usePlantsData } from '../../hooks/usePlantsData';
 import { PLANTS, fmtDuration } from '../../lib/constants';
 import { useSidebar } from '../../contexts/SidebarContext';
-import type { PlantId, PlantState } from '../../types';
+import type { PlantId, PlantState, ActiveSession } from '../../types';
 
-// ── Constants ──────────────────────────────────────────────────────────────────
-interface LotInfo { lot: string; party: string; orderId: string; articleNo: string; articleName: string; color: string; }
-const LOT_DATA: Record<PlantId, LotInfo> = {
-  'SP-01': { lot: 'LOT-2841', party: 'Servis Industries',   orderId: 'ORD-4471', articleNo: 'ART-5021', articleName: 'Black Formal Upper',  color: 'Jet Black'    },
-  'SP-02': { lot: 'LOT-2842', party: 'Bata Pakistan',       orderId: 'ORD-4472', articleNo: 'ART-5034', articleName: 'Brown Derby Upper',   color: 'Walnut Brown' },
-  'SP-03': { lot: 'LOT-2843', party: 'Stylo Group',         orderId: 'ORD-4473', articleNo: 'ART-5047', articleName: 'Tan Casual Moccasin', color: 'Sand Tan'     },
-  'SP-04': { lot: '',         party: 'Hush Puppies PK',     orderId: 'ORD-4474', articleNo: 'ART-5058', articleName: 'Suede Chelsea Boot',  color: 'Charcoal'     },
-  'SP-05': { lot: 'LOT-2845', party: 'Insignia Leather',    orderId: 'ORD-4475', articleNo: 'ART-5063', articleName: 'Black Oxford Upper',  color: 'Onyx'         },
-  'SP-06': { lot: 'LOT-2846', party: 'Borjan Pvt Ltd',      orderId: 'ORD-4476', articleNo: 'ART-5071', articleName: 'Cognac Loafer Upper', color: 'Cognac'       },
-};
+// ── Helpers ────────────────────────────────────────────────────────────────────
 
-const LOT_COLORS: Record<PlantId, { bg: string; text: string }> = {
-  'SP-01': { bg: '#3B0764', text: '#C4B5FD' },
-  'SP-02': { bg: '#052E16', text: '#86EFAC' },
-  'SP-03': { bg: '#422006', text: '#FDE68A' },
-  'SP-04': { bg: '#4A044E', text: '#F0ABFC' },
-  'SP-05': { bg: '#0C1A4B', text: '#93C5FD' },
-  'SP-06': { bg: '#450A0A', text: '#FCA5A5' },
-};
+function elapsedSince(isoString: string, now: Date): string {
+  const start = new Date(isoString);
+  const diffS = Math.max(0, Math.floor((now.getTime() - start.getTime()) / 1000));
+  return fmtDuration(diffS);
+}
 
-// [colorMatch%, wash%, idle%] — must sum to 100
-const IDLE_BREAKDOWN: Record<PlantId, [number, number, number]> = {
-  'SP-01': [ 6, 18, 76],
-  'SP-02': [22,  9, 69],
-  'SP-03': [41,  2, 57],
-  'SP-04': [ 0, 68, 32],
-  'SP-05': [42, 13, 45],
-  'SP-06': [39, 13, 48],
-};
-
+const NA = 'Not Available';
 
 // ── Plant card ─────────────────────────────────────────────────────────────────
 interface PlantCardProps {
-  plant: PlantState;
+  plant:          PlantState;
   dayElapsedSecs: number;
-  delay?: number;
+  now:            Date;
+  delay?:         number;
 }
 
-function PlantCard({ plant, dayElapsedSecs, delay = 0 }: PlantCardProps) {
-  const displayId = plant.plant_id;
-  const lotInfo   = LOT_DATA[plant.plant_id as PlantId] ?? { lot: '', party: 'Unknown', orderId: '—', articleNo: '—', articleName: '—', color: '—' };
-  const lotStyle  = LOT_COLORS[plant.plant_id as PlantId] ?? { bg: '#1a1a1a', text: '#fff' };
-  const lotLabel  = lotInfo.lot?.trim() ? lotInfo.lot : 'unaccounted';
-  const hasLot    = !!lotInfo.lot?.trim();
-  const [cmPct, washPct, idlePct] = IDLE_BREAKDOWN[plant.plant_id as PlantId] ?? [33, 33, 34];
+function PlantCard({ plant, dayElapsedSecs, now, delay = 0 }: PlantCardProps) {
+  const sess = plant.active_session ?? null;
 
-  // Break window (from backend) takes visual precedence over Running/Idle.
+  // Belt status badges (independent of session state)
   const isBreak   = plant.online && !!plant.in_break;
   const isRunning = plant.online && plant.belt_active && !isBreak;
   const isIdle    = plant.online && !plant.belt_active && !isBreak;
@@ -63,12 +38,28 @@ function PlantCard({ plant, dayElapsedSecs, delay = 0 }: PlantCardProps) {
   const activeHrs = fmtDuration(plant.runtime_s);
   const idleHrs   = fmtDuration(plant.idle_s);
 
-  // Progress bar — proportional to day elapsed
   const total      = dayElapsedSecs || 1;
   const activeFrac = Math.min(plant.runtime_s / total, 1) * 100;
   const idleFrac   = Math.min(plant.idle_s    / total, 1) * 100;
-  const cmFrac     = idleFrac * (cmPct   / 100);
-  const washFrac   = idleFrac * (washPct / 100);
+
+  // ── Session badge ──────────────────────────────────────────────────────
+  type SessionBadge = { label: string; cls: string; pulse: boolean };
+  const sessionBadge: SessionBadge = sess == null
+    ? { label: 'NO SESSION',  cls: 'bg-gray-600 text-gray-200',              pulse: false }
+    : sess.type === 'accounted'
+      ? { label: 'INPROCESS',   cls: 'bg-[#22C55E] text-black',               pulse: true  }
+      : { label: 'UNACCOUNTED', cls: 'bg-[#F59E0B] text-black',               pulse: true  };
+
+  // ── Lot info fields ────────────────────────────────────────────────────
+  const lotLabel    = sess?.lot_no       ?? NA;
+  const partyLabel  = sess?.party_name   ?? NA;
+  const orderLabel  = sess?.order_no     ?? NA;
+  const colorLabel  = sess?.colour_name  ?? NA;
+  const articleLabel = sess?.article_name ?? NA;
+
+  const currentPieces  = sess?.current_pieces  ?? null;
+  const expectedPieces = sess?.expected_pieces ?? null;
+  const sessionActive  = sess ? elapsedSince(sess.start_time, now) : null;
 
   return (
     <motion.div
@@ -77,85 +68,96 @@ function PlantCard({ plant, dayElapsedSecs, delay = 0 }: PlantCardProps) {
       transition={{ duration: 0.35, delay }}
       className="bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-2xl overflow-hidden flex flex-col"
     >
-      {/* SP name + Lot # at top right */}
+      {/* Header: plant ID + session badge */}
       <div className="flex items-center justify-between px-3 pt-2.5 pb-1">
-        <span className="text-gray-900 dark:text-white font-black text-lg tracking-tight">{displayId}</span>
-        <span
-          title={hasLot ? `Lot ${lotInfo.lot}` : 'No lot number entered'}
-          className="text-[10px] font-bold px-2 py-0.5 rounded-md flex-shrink-0 max-w-[55%] truncate"
-          style={hasLot
-            ? { backgroundColor: lotStyle.bg, color: lotStyle.text }
-            : { backgroundColor: '#3F1212', color: '#FCA5A5' }}
-        >
-          {lotLabel}
+        <span className="text-gray-900 dark:text-white font-black text-lg tracking-tight">
+          {plant.plant_id}
+        </span>
+        <span className={`text-[9px] font-bold px-2 py-0.5 rounded-md flex-shrink-0 ${sessionBadge.cls} ${sessionBadge.pulse ? 'animate-pulse' : ''}`}>
+          {sessionBadge.label}
         </span>
       </div>
 
-      {/* Status badge */}
+      {/* Belt status badge */}
       <div className="px-3 pb-2">
         {isBreak && (
-          <span className="bg-[#8B5CF6] text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full">
-            Break
-          </span>
+          <span className="bg-[#8B5CF6] text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full">Break</span>
         )}
         {isRunning && (
-          <span className="bg-[#22C55E] text-black text-[10px] font-bold px-2.5 py-0.5 rounded-full">
-            Running
-          </span>
+          <span className="bg-[#22C55E] text-black text-[10px] font-bold px-2.5 py-0.5 rounded-full">Running</span>
         )}
         {isIdle && (
-          <span className="bg-[#F59E0B] text-black text-[10px] font-bold px-2.5 py-0.5 rounded-full">
-            Idle
-          </span>
+          <span className="bg-[#F59E0B] text-black text-[10px] font-bold px-2.5 py-0.5 rounded-full">Idle</span>
         )}
         {!plant.online && plant.is_holiday && (
-          <span
-            title="Today is a configured holiday — inference is not writing data."
-            className="bg-[#3B82F6] text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full"
-          >
-            Offline · Holiday
-          </span>
+          <span className="bg-[#3B82F6] text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full">Offline · Holiday</span>
         )}
         {!plant.online && !plant.is_holiday && plant.is_weekly_off && (
-          <span
-            title="Today is a configured weekly off-day — inference is not writing data."
-            className="bg-[#6366F1] text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full"
-          >
-            Offline · Day Off
-          </span>
+          <span className="bg-[#6366F1] text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full">Offline · Day Off</span>
         )}
         {!plant.online && !plant.is_holiday && !plant.is_weekly_off && (
-          <span className="bg-gray-700 text-gray-300 text-[10px] font-bold px-2.5 py-0.5 rounded-full">
-            Offline
-          </span>
+          <span className="bg-gray-700 text-gray-300 text-[10px] font-bold px-2.5 py-0.5 rounded-full">Offline</span>
         )}
       </div>
 
-      {/* Party / Order / Article / Color */}
+      {/* Lot info grid */}
       <div className="px-3 pb-3 grid grid-cols-2 gap-x-2 gap-y-1.5">
         <div className="col-span-2">
+          <p className="text-gray-500 text-[9px] font-semibold uppercase tracking-wider leading-none mb-0.5">LOT</p>
+          <p className={`text-[11px] font-bold truncate leading-tight ${sess?.lot_no ? 'text-gray-900 dark:text-white' : 'text-gray-400 dark:text-gray-600 italic'}`}>
+            {lotLabel}
+          </p>
+        </div>
+        <div className="col-span-2">
           <p className="text-gray-500 text-[9px] font-semibold uppercase tracking-wider leading-none mb-0.5">Party</p>
-          <p className="text-[12px] font-bold text-gray-900 dark:text-white truncate leading-tight">{lotInfo.party}</p>
+          <p className={`text-[12px] font-bold truncate leading-tight ${sess?.party_name ? 'text-gray-900 dark:text-white' : 'text-gray-400 dark:text-gray-600 italic'}`}>
+            {partyLabel}
+          </p>
         </div>
         <div>
           <p className="text-gray-500 text-[9px] font-semibold uppercase tracking-wider leading-none mb-0.5">Order</p>
-          <p className="text-[11px] font-semibold text-gray-700 dark:text-gray-300 truncate tabular-nums">{lotInfo.orderId}</p>
+          <p className={`text-[11px] font-semibold truncate tabular-nums ${sess?.order_no ? 'text-gray-700 dark:text-gray-300' : 'text-gray-400 dark:text-gray-600 italic'}`}>
+            {orderLabel}
+          </p>
         </div>
         <div>
           <p className="text-gray-500 text-[9px] font-semibold uppercase tracking-wider leading-none mb-0.5">Color</p>
-          <p className="text-[11px] font-semibold text-gray-700 dark:text-gray-300 truncate">{lotInfo.color}</p>
+          <p className={`text-[11px] font-semibold truncate ${sess?.colour_name ? 'text-gray-700 dark:text-gray-300' : 'text-gray-400 dark:text-gray-600 italic'}`}>
+            {colorLabel}
+          </p>
         </div>
         <div className="col-span-2">
           <p className="text-gray-500 text-[9px] font-semibold uppercase tracking-wider leading-none mb-0.5">Article</p>
-          <p className="text-[11px] font-semibold text-gray-700 dark:text-gray-300 truncate">{lotInfo.articleName}</p>
+          <p className={`text-[11px] font-semibold truncate ${sess?.article_name ? 'text-gray-700 dark:text-gray-300' : 'text-gray-400 dark:text-gray-600 italic'}`}>
+            {articleLabel}
+          </p>
         </div>
       </div>
 
-      {/* Pieces today / Active */}
+      {/* Session piece counts (shown only when a session is active) */}
+      {sess && (
+        <div className="mx-3 mb-2 bg-gray-50 dark:bg-[#111111] rounded-xl p-2.5">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col">
+              <p className="text-gray-500 text-[10px] font-medium leading-tight mb-1.5">Current Pieces</p>
+              <p className="text-gray-900 dark:text-white font-black text-2xl leading-none tabular-nums">
+                {(currentPieces ?? 0).toLocaleString()}
+              </p>
+            </div>
+            <div className="flex flex-col">
+              <p className="text-gray-500 text-[10px] font-medium leading-tight mb-1.5">Expected</p>
+              <p className="text-gray-900 dark:text-white font-black text-2xl leading-none tabular-nums">
+                {expectedPieces != null ? expectedPieces.toLocaleString() : <span className="text-base italic text-gray-400">N/A</span>}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Pieces today + Active time */}
       <div className="mx-3 mb-2 bg-gray-50 dark:bg-[#111111] rounded-xl p-2.5">
         <div className="grid grid-cols-2 gap-3">
           <div className="flex flex-col">
-            {/* fixed-height label area = 2 lines */}
             <p className="text-gray-500 text-[10px] font-medium leading-tight mb-1.5 h-[28px] flex items-end">
               Pieces today
             </p>
@@ -165,10 +167,10 @@ function PlantCard({ plant, dayElapsedSecs, delay = 0 }: PlantCardProps) {
           </div>
           <div className="flex flex-col">
             <p className="text-gray-500 text-[10px] font-medium leading-tight mb-1.5 h-[28px] flex items-end">
-              Active
+              {sess ? 'Session time' : 'Active'}
             </p>
             <p className="text-green-600 dark:text-green-400 font-black text-lg leading-none tabular-nums truncate">
-              {activeHrs}
+              {sess ? (sessionActive ?? '--') : activeHrs}
             </p>
           </div>
         </div>
@@ -184,39 +186,30 @@ function PlantCard({ plant, dayElapsedSecs, delay = 0 }: PlantCardProps) {
         </span>
       </div>
 
-      {/* % of idle time */}
+      {/* % of idle time — static proportional display */}
       <div className="px-3 pb-2 flex-1">
-        <p className="text-gray-600 text-[9px] font-semibold uppercase tracking-widest mb-2">
-          % of idle time
-        </p>
+        <p className="text-gray-600 text-[9px] font-semibold uppercase tracking-widest mb-2">% of idle time</p>
         <div className="grid grid-cols-3 gap-1.5">
-          <div className="flex flex-col items-center gap-1.5">
-            <span className="bg-blue-50 dark:bg-[#0a2040] text-blue-600 dark:text-blue-300 text-[9px] font-semibold rounded w-full text-center leading-tight h-[32px] flex items-center justify-center">
-              Color<br />match
-            </span>
-            <span className="text-gray-900 dark:text-white font-black text-base tabular-nums">{cmPct}%</span>
-          </div>
-          <div className="flex flex-col items-center gap-1.5">
-            <span className="bg-amber-50 dark:bg-[#221500] text-amber-600 dark:text-amber-300 text-[9px] font-semibold rounded w-full text-center leading-tight h-[32px] flex items-center justify-center">
-              Wash
-            </span>
-            <span className="text-gray-900 dark:text-white font-black text-base tabular-nums">{washPct}%</span>
-          </div>
-          <div className="flex flex-col items-center gap-1.5">
-            <span className="bg-gray-100 dark:bg-[#252525] text-gray-600 dark:text-gray-400 text-[9px] font-semibold rounded w-full text-center leading-tight h-[32px] flex items-center justify-center">
-              Idle
-            </span>
-            <span className="text-gray-900 dark:text-white font-black text-base tabular-nums">{idlePct}%</span>
-          </div>
+          {[
+            { label: 'Color\nmatch', bg: 'bg-blue-50 dark:bg-[#0a2040]',   text: 'text-blue-600 dark:text-blue-300'   },
+            { label: 'Wash',        bg: 'bg-amber-50 dark:bg-[#221500]',   text: 'text-amber-600 dark:text-amber-300' },
+            { label: 'Idle',        bg: 'bg-gray-100 dark:bg-[#252525]',   text: 'text-gray-600 dark:text-gray-400'  },
+          ].map(({ label, bg, text }) => (
+            <div key={label} className="flex flex-col items-center gap-1.5">
+              <span className={`${bg} ${text} text-[9px] font-semibold rounded w-full text-center leading-tight h-[32px] flex items-center justify-center whitespace-pre-line`}>
+                {label}
+              </span>
+              <span className="text-gray-400 dark:text-gray-600 font-bold text-base tabular-nums">—</span>
+            </div>
+          ))}
         </div>
       </div>
 
-      {/* Progress bar — edge to edge */}
+      {/* Progress bar */}
       <div className="flex h-1.5">
         <div className="bg-[#22C55E]" style={{ width: `${activeFrac}%` }} />
-        <div className="bg-[#3B82F6]" style={{ width: `${cmFrac}%` }} />
-        <div className="bg-[#F59E0B]" style={{ width: `${washFrac}%` }} />
-        <div className="bg-[#4B5563] flex-1" />
+        <div className="bg-[#4B5563] flex-1" style={{ width: `${idleFrac}%` }} />
+        <div className="bg-[#1f1f1f] flex-1" />
       </div>
     </motion.div>
   );
@@ -233,13 +226,9 @@ export default function FloorView() {
     return () => clearInterval(id);
   }, []);
 
-  const plantList = PLANTS.map(p => {
-    const base = plants[p.id];
-    return base ?? null;
-  }).filter(Boolean) as PlantState[];
+  const plantList = PLANTS.map(p => plants[p.id] ?? null).filter(Boolean) as PlantState[];
 
   const dayElapsedSecs = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
-  const dayElapsedHrs  = (dayElapsedSecs / 3600).toFixed(1);
   const clockStr       = format(now, 'HH:mm:ss');
 
   const { totalPieces, totalActiveStr, totalIdleStr, runningCount } = useMemo(() => {
@@ -254,16 +243,22 @@ export default function FloorView() {
   }, [plantList]);
 
   const exportPDF = useCallback(() => {
-    const dateStr  = format(now, 'MMMM d, yyyy');
-    const pdfRows  = plantList.map(p => `
-      <tr>
-        <td>${p.plant_name}</td>
-        <td>${p.online ? (p.belt_active ? '<span class="running">Running</span>' : '<span class="idle">Idle</span>') : '<span class="offline">Offline</span>'}</td>
-        <td>${(p.total_count ?? 0).toLocaleString()}</td>
-        <td>${fmtDuration(p.runtime_s)}</td>
-        <td>${fmtDuration(p.idle_s)}</td>
-        <td>${Math.round(p.utilization ?? 0)}%</td>
-      </tr>`).join('');
+    const dateStr = format(now, 'MMMM d, yyyy');
+    const pdfRows = plantList.map(p => {
+      const sess = p.active_session;
+      const sessionInfo = sess
+        ? `${sess.type === 'accounted' ? `LOT ${sess.lot_no}` : 'Unaccounted'} · ${sess.current_pieces} pcs`
+        : 'No Session';
+      return `
+        <tr>
+          <td>${p.plant_name}</td>
+          <td>${p.online ? (p.belt_active ? '<span class="running">Running</span>' : '<span class="idle">Idle</span>') : '<span class="offline">Offline</span>'}</td>
+          <td>${sessionInfo}</td>
+          <td>${(p.total_count ?? 0).toLocaleString()}</td>
+          <td>${fmtDuration(p.runtime_s)}</td>
+          <td>${fmtDuration(p.idle_s)}</td>
+        </tr>`;
+    }).join('');
     const html = `<!DOCTYPE html><html><head><title>Floor View — ${dateStr}</title>
       <style>
         body { font-family: Arial, sans-serif; padding: 24px; color: #111; }
@@ -280,7 +275,7 @@ export default function FloorView() {
       <h1>Dada Enterprises — Floor View</h1>
       <p>${dateStr} · Kasur, Punjab · Total pieces: ${totalPieces.toLocaleString()}</p>
       <table>
-        <thead><tr><th>Plant</th><th>Status</th><th>Pieces</th><th>Active (h)</th><th>Idle (h)</th><th>Utilization</th></tr></thead>
+        <thead><tr><th>Plant</th><th>Status</th><th>Session</th><th>Pieces</th><th>Active</th><th>Idle</th></tr></thead>
         <tbody>${pdfRows}</tbody>
       </table></body></html>`;
     const w = window.open('', '_blank');
@@ -329,39 +324,23 @@ export default function FloorView() {
       {/* ── KPI row ── */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4 pb-4 border-b border-gray-200 dark:border-[#1f1f1f]">
         <div>
-          <p className="text-gray-600 text-[10px] font-semibold uppercase tracking-[0.15em] mb-2">
-            Total Pieces Today
-          </p>
-          <p className="text-gray-900 dark:text-white font-black text-3xl tabular-nums leading-none mb-0.5">
-            {totalPieces.toLocaleString()}
-          </p>
+          <p className="text-gray-600 text-[10px] font-semibold uppercase tracking-[0.15em] mb-2">Total Pieces Today</p>
+          <p className="text-gray-900 dark:text-white font-black text-3xl tabular-nums leading-none mb-0.5">{totalPieces.toLocaleString()}</p>
           <p className="text-gray-600 text-xs">all 6 plants</p>
         </div>
         <div>
-          <p className="text-gray-600 text-[10px] font-semibold uppercase tracking-[0.15em] mb-1">
-            Total Active Hrs
-          </p>
-          <p className="text-gray-900 dark:text-white font-black text-3xl tabular-nums leading-none mb-0.5">
-            {totalActiveStr}
-          </p>
+          <p className="text-gray-600 text-[10px] font-semibold uppercase tracking-[0.15em] mb-1">Total Active Hrs</p>
+          <p className="text-gray-900 dark:text-white font-black text-3xl tabular-nums leading-none mb-0.5">{totalActiveStr}</p>
           <p className="text-gray-600 text-xs">combined</p>
         </div>
         <div>
-          <p className="text-gray-600 text-[10px] font-semibold uppercase tracking-[0.15em] mb-1">
-            Total Idle Hrs
-          </p>
-          <p className="text-gray-900 dark:text-white font-black text-3xl tabular-nums leading-none mb-0.5">
-            {totalIdleStr}
-          </p>
+          <p className="text-gray-600 text-[10px] font-semibold uppercase tracking-[0.15em] mb-1">Total Idle Hrs</p>
+          <p className="text-gray-900 dark:text-white font-black text-3xl tabular-nums leading-none mb-0.5">{totalIdleStr}</p>
           <p className="text-gray-600 text-xs">all reasons</p>
         </div>
         <div>
-          <p className="text-gray-600 text-[10px] font-semibold uppercase tracking-[0.15em] mb-1">
-            Plants Running
-          </p>
-          <p className="text-gray-900 dark:text-white font-black text-3xl tabular-nums leading-none mb-0.5">
-            {runningCount} / {PLANTS.length}
-          </p>
+          <p className="text-gray-600 text-[10px] font-semibold uppercase tracking-[0.15em] mb-1">Plants Running</p>
+          <p className="text-gray-900 dark:text-white font-black text-3xl tabular-nums leading-none mb-0.5">{runningCount} / {PLANTS.length}</p>
           <p className="text-gray-600 text-xs">right now</p>
         </div>
       </div>
@@ -373,6 +352,7 @@ export default function FloorView() {
             key={p.plant_id}
             plant={p}
             dayElapsedSecs={dayElapsedSecs}
+            now={now}
             delay={0.05 + i * 0.05}
           />
         ))}
@@ -384,10 +364,9 @@ export default function FloorView() {
         ${sidebarHidden ? 'left-0' : collapsed ? 'left-18' : 'left-58'}`}>
         <div className="flex items-center gap-4 flex-wrap">
           {[
-            { color: '#22C55E', label: 'Active' },
-            { color: '#3B82F6', label: 'Idle — color match' },
-            { color: '#F59E0B', label: 'Idle — wash' },
-            { color: '#4B5563', label: 'Idle — unaccounted' },
+            { color: '#22C55E', label: 'INPROCESS (accounted)' },
+            { color: '#F59E0B', label: 'UNACCOUNTED session'   },
+            { color: '#6B7280', label: 'No session'            },
           ].map(({ color, label }) => (
             <div key={label} className="flex items-center gap-1.5">
               <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
@@ -395,7 +374,7 @@ export default function FloorView() {
             </div>
           ))}
         </div>
-        <span className="text-gray-500 text-xs flex-shrink-0">Refreshes every 5s</span>
+        <span className="text-gray-500 text-xs flex-shrink-0">Session data refreshes every 15s</span>
       </div>
 
     </div>

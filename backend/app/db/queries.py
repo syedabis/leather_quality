@@ -371,3 +371,99 @@ def get_plant_states() -> list[dict]:
             "sessions":      [],
         })
     return result
+
+
+# ── AppSessions ────────────────────────────────────────────────────────────
+
+def get_active_sessions() -> dict[str, dict | None]:
+    """Returns plant → active session dict for every unit (None if no INPROCESS session)."""
+    sql = """
+        SELECT s.SessionId, s.LotNo, s.Plant, s.StartTime,
+               s.ExpectedPieces, s.ProcessedPieces,
+               wb.OrderNo, wb.ArticleName, wb.ColourName, wb.PartyName, wb.PK
+        FROM dbo.AppSessions s
+        LEFT JOIN dbo.WBIssuance_Info wb ON wb.IssueNoCounter = s.IssueNoCounter
+        WHERE s.Status = 'INPROCESS'
+        ORDER BY s.StartTime DESC
+    """
+    result: dict[str, dict | None] = {u: None for u in UNITS}
+    seen: set[str] = set()
+
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(sql)
+            for row in cur.fetchall():
+                (sid, lot_no, plant, start_time,
+                 exp_pcs, proc_pcs,
+                 order_no, article_name, colour_name, party_name, pk_code) = row
+                if plant not in result or plant in seen:
+                    continue
+                seen.add(plant)
+                result[plant] = {
+                    "session_id":      sid,
+                    "lot_no":          str(lot_no) if lot_no is not None else None,
+                    "plant":           plant,
+                    "start_time":      start_time.isoformat() if start_time else None,
+                    "expected_pieces": int(exp_pcs)  if exp_pcs  is not None else None,
+                    "current_pieces":  int(proc_pcs) if proc_pcs is not None else 0,
+                    "type":            "accounted" if lot_no is not None else "unaccounted",
+                    "order_no":        order_no,
+                    "article_name":    article_name,
+                    "colour_name":     colour_name,
+                    "party_name":      party_name,
+                    "pk_code":         str(pk_code) if pk_code else None,
+                }
+    except Exception as exc:
+        print(f"[queries] get_active_sessions error: {exc}")
+
+    return result
+
+
+def get_app_sessions(plant: str | None = None, limit: int = 200) -> list[dict]:
+    """All sessions from AppSessions (completed + active), newest first."""
+    params: list = []
+    where = ""
+    if plant:
+        where = "WHERE s.Plant = ?"
+        params.append(plant)
+
+    sql = f"""
+        SELECT TOP {int(limit)}
+            s.SessionId, s.LotNo, s.Plant, s.StartTime, s.EndTime,
+            s.ExpectedPieces, s.ProcessedPieces, s.Status,
+            wb.OrderNo, wb.ArticleName, wb.ColourName, wb.PartyName, wb.PK
+        FROM dbo.AppSessions s
+        LEFT JOIN dbo.WBIssuance_Info wb ON wb.IssueNoCounter = s.IssueNoCounter
+        {where}
+        ORDER BY s.StartTime DESC
+    """
+    results = []
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(sql, params)
+            for row in cur.fetchall():
+                (sid, lot_no, plant_id, start_time, end_time,
+                 exp_pcs, proc_pcs, status,
+                 order_no, article_name, colour_name, party_name, pk_code) = row
+                results.append({
+                    "session_id":       sid,
+                    "lot_no":           str(lot_no) if lot_no is not None else None,
+                    "plant":            plant_id,
+                    "start_time":       start_time.isoformat() if start_time else None,
+                    "end_time":         end_time.isoformat()   if end_time   else None,
+                    "expected_pieces":  int(exp_pcs)  if exp_pcs  is not None else None,
+                    "processed_pieces": int(proc_pcs) if proc_pcs is not None else 0,
+                    "status":           status,
+                    "type":             "accounted" if lot_no is not None else "unaccounted",
+                    "order_no":         order_no,
+                    "article_name":     article_name,
+                    "colour_name":      colour_name,
+                    "party_name":       party_name,
+                    "pk_code":          str(pk_code) if pk_code else None,
+                })
+    except Exception as exc:
+        print(f"[queries] get_app_sessions error: {exc}")
+
+    return results

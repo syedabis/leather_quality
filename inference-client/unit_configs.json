@@ -9,7 +9,7 @@
     },
     "ROI_and_line": "Coordinates are NORMALIZED (0.0-1.0). x=0.25 means 25% from left, w=0.50 means 50% width. Adjust per camera angle."
   },
-  "SP-01": {
+  "SP-03": {
     "source": "rtsp://admin:Dada1234@110.39.8.243:7411/Streaming/Channels/1",
     "roi": {
       "x": 0.05,
@@ -28,8 +28,8 @@
       ]
     }
   },
-  "SP-02": {
-    "source": "D:\\Ahmer\\deploy_v0\\inference-client\\videos\\SP-02",
+  "SP-01": {
+    "source": "D:\\Ahmer\\deploy_v0\\inference-client\\videos\\SP-01",
     "roi": {
       "x": 0.10,
       "y": 0.30,
@@ -47,8 +47,8 @@
       ]
     }
   },
-  "SP-03": {
-    "source": "D:\\Ahmer\\deploy_v0\\inference-client\\videos\\SP-03",
+  "SP-06": {
+    "source": "D:\\Ahmer\\deploy_v0\\inference-client\\videos\\SP-06",
     "roi": {
       "x": 0.15,
       "y": 0.20,
@@ -66,8 +66,8 @@
       ]
     }
   },
-  "SP-04": {
-    "source": "D:\\Ahmer\\deploy_v0\\inference-client\\videos\\SP-04",
+  "SP-02": {
+    "source": "D:\\Ahmer\\deploy_v0\\inference-client\\videos\\SP-02",
     "roi": {
       "x": 0.25,
       "y": 0.25,
@@ -104,8 +104,8 @@
       ]
     }
   },
-  "SP-06": {
-    "source": "D:\\Ahmer\\deploy_v0\\inference-client\\videos\\SP-06",
+  "SP-04": {
+    "source": "D:\\Ahmer\\deploy_v0\\inference-client\\videos\\SP-04",
     "roi": {
       "x": 0.25,
       "y": 0.17,

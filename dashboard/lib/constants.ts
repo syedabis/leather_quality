@@ -17,12 +17,12 @@ export const PLANTS: Plant[] = [
 
 /** Preview video paths keyed by PlantId — used on both the monitoring grid and the plant detail page */
 export const PREVIEW_VIDEOS: Record<PlantId, string> = {
-  'SP-01': '/monitoring/Applying-Surface-Spray-Finish-To-A-Leather-Animal-2026-01-22-23-47-27-Utc.mp4',
-  'SP-02': '/monitoring/Closeup-Shot-Of-Leather-Being-Sprayed-During-Manuf-2026-01-23-00-17-03-Utc.mp4',
-  'SP-03': '/monitoring/Hands-Placing-Leather-Hides-Onto-A-Conveyor-Belt-D-2026-01-22-19-47-49-Utc.mp4',
-  'SP-04': '/monitoring/Industrial-Conveyor-Belt-Moving-Leather-Hides-In-A-2026-01-20-19-21-09-Utc.mp4',
+  'SP-03': '/monitoring/Applying-Surface-Spray-Finish-To-A-Leather-Animal-2026-01-22-23-47-27-Utc.mp4',
+  'SP-01': '/monitoring/Closeup-Shot-Of-Leather-Being-Sprayed-During-Manuf-2026-01-23-00-17-03-Utc.mp4',
+  'SP-06': '/monitoring/Hands-Placing-Leather-Hides-Onto-A-Conveyor-Belt-D-2026-01-22-19-47-49-Utc.mp4',
+  'SP-02': '/monitoring/Industrial-Conveyor-Belt-Moving-Leather-Hides-In-A-2026-01-20-19-21-09-Utc.mp4',
   'SP-05': '/monitoring/Machine-Spray-Coating-Leather-Hides-In-A-Productio-2026-01-20-17-58-57-Utc.mp4',
-  'SP-06': '/monitoring/Worker-Drops-Hides-Onto-A-Conveyor-Belt-Leather-M-2026-01-22-13-32-14-Utc.mp4',
+  'SP-04': '/monitoring/Worker-Drops-Hides-Onto-A-Conveyor-Belt-Leather-M-2026-01-22-13-32-14-Utc.mp4',
 };
 
 // Derive the backend host from the page's hostname at runtime so the dashboard

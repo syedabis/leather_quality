@@ -22,7 +22,10 @@ async def ws_plants(websocket: WebSocket):
     try:
         while True:
             try:
-                states = queries.get_plant_states()
+                states          = queries.get_plant_states()
+                active_sessions = queries.get_active_sessions()
+                for state in states:
+                    state["active_session"] = active_sessions.get(state.get("plant_id"))
                 # Send all plants in ONE message so the frontend processes
                 # them atomically — sending N separate messages causes React
                 # to batch the setState calls and drop all but the last one.

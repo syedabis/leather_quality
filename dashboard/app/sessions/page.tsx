@@ -2,102 +2,78 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { FiFilter, FiSearch } from 'react-icons/fi';
-import { PLANTS, fmtDuration, API_URL } from '../../lib/constants';
-import { getSessions } from '../../lib/api';
+import { PLANTS, API_URL } from '../../lib/constants';
 
-interface SessionRow {
-  key: string;
-  plant_id: string;
-  session_num: number;
-  start_time_s: number | null;
-  duration_s: number | null;
-  piece_count: number;
-  is_active: boolean;
+interface AppSession {
+  session_id:       number;
+  lot_no:           string | null;
+  plant:            string;
+  start_time:       string | null;
+  end_time:         string | null;
+  expected_pieces:  number | null;
+  processed_pieces: number;
+  status:           string;
+  type:             'accounted' | 'unaccounted';
+  order_no:         string | null;
+  article_name:     string | null;
+  colour_name:      string | null;
+  party_name:       string | null;
+  pk_code:          string | null;
 }
 
-interface ApiSessionResponse {
-  id: number;
-  unit: string;
-  session_num: number;
-  start_time_s: number | null;
-  end_time_s: number | null;
-  duration_s: number | null;
-  piece_count: number;
-  is_active: boolean;
+function fmtDatetime(iso: string | null): string {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${pad(d.getDate())}-${pad(d.getMonth() + 1)}-${d.getFullYear()}  ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  } catch { return iso; }
 }
 
-// Fallback demo data if API is unreachable
-const DEMO_SESSIONS: SessionRow[] = [
-  { key: 'SP-01-1', plant_id: 'SP-01', session_num: 1,  start_time_s: 0,      duration_s: 3_600, piece_count: 1_050, is_active: false },
-  { key: 'SP-01-2', plant_id: 'SP-01', session_num: 2,  start_time_s: 3_720,  duration_s: 3_540, piece_count: 1_080, is_active: false },
-  { key: 'SP-01-3', plant_id: 'SP-01', session_num: 3,  start_time_s: 7_380,  duration_s: null,  piece_count: 920,   is_active: true  },
-  { key: 'SP-02-1', plant_id: 'SP-02', session_num: 1,  start_time_s: 120,    duration_s: 3_480, piece_count: 940,   is_active: false },
-  { key: 'SP-02-2', plant_id: 'SP-02', session_num: 2,  start_time_s: 3_720,  duration_s: 3_600, piece_count: 970,   is_active: false },
-  { key: 'SP-02-3', plant_id: 'SP-02', session_num: 3,  start_time_s: 7_440,  duration_s: null,  piece_count: 860,   is_active: true  },
-  { key: 'SP-03-1', plant_id: 'SP-03', session_num: 1,  start_time_s: 60,     duration_s: 3_540, piece_count: 1_120, is_active: false },
-  { key: 'SP-03-2', plant_id: 'SP-03', session_num: 2,  start_time_s: 3_720,  duration_s: 3_600, piece_count: 1_100, is_active: false },
-  { key: 'SP-03-3', plant_id: 'SP-03', session_num: 3,  start_time_s: 7_440,  duration_s: null,  piece_count: 1_030, is_active: true  },
-  { key: 'SP-04-1', plant_id: 'SP-04', session_num: 1,  start_time_s: 240,    duration_s: 3_420, piece_count: 880,   is_active: false },
-  { key: 'SP-04-2', plant_id: 'SP-04', session_num: 2,  start_time_s: 3_780,  duration_s: 3_480, piece_count: 860,   is_active: false },
-  { key: 'SP-04-3', plant_id: 'SP-04', session_num: 3,  start_time_s: 7_380,  duration_s: null,  piece_count: 790,   is_active: true  },
-  { key: 'SP-05-1', plant_id: 'SP-05', session_num: 1,  start_time_s: 0,      duration_s: 3_600, piece_count: 1_030, is_active: false },
-  { key: 'SP-05-2', plant_id: 'SP-05', session_num: 2,  start_time_s: 3_720,  duration_s: 3_540, piece_count: 1_010, is_active: false },
-  { key: 'SP-05-3', plant_id: 'SP-05', session_num: 3,  start_time_s: 7_380,  duration_s: null,  piece_count: 950,   is_active: true  },
-  { key: 'SP-06-1', plant_id: 'SP-06', session_num: 1,  start_time_s: 180,    duration_s: 3_480, piece_count: 920,   is_active: false },
-  { key: 'SP-06-2', plant_id: 'SP-06', session_num: 2,  start_time_s: 3_780,  duration_s: 3_540, piece_count: 900,   is_active: false },
-  { key: 'SP-06-3', plant_id: 'SP-06', session_num: 3,  start_time_s: 7_440,  duration_s: null,  piece_count: 840,   is_active: true  },
-];
-
-function mapApiSession(row: ApiSessionResponse): SessionRow {
-  return {
-    key: String(row.id),
-    plant_id: row.unit,
-    session_num: row.session_num,
-    start_time_s: row.start_time_s,
-    duration_s: row.duration_s,
-    piece_count: row.piece_count,
-    is_active: row.is_active,
-  };
-}
-
-function plantName(unit: string): string {
-  return PLANTS.find(p => p.id === unit)?.name ?? unit;
+function fmtDuration(startIso: string | null, endIso: string | null): string {
+  if (!startIso) return '—';
+  const start = new Date(startIso).getTime();
+  const end   = endIso ? new Date(endIso).getTime() : Date.now();
+  const s     = Math.max(0, Math.floor((end - start) / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`;
+  if (m > 0) return `${m}m ${String(s % 60).padStart(2, '0')}s`;
+  return `${s}s`;
 }
 
 export default function Sessions() {
   const [filterPlant, setFilterPlant] = useState('all');
+  const [filterType,  setFilterType]  = useState<'all' | 'accounted' | 'unaccounted'>('all');
   const [search,      setSearch]      = useState('');
-  const [sessions, setSessions] = useState<SessionRow[]>(DEMO_SESSIONS);
-  const [loading, setLoading] = useState(true);
+  const [sessions,    setSessions]    = useState<AppSession[]>([]);
+  const [loading,     setLoading]     = useState(true);
 
-  // Fetch sessions from API on mount
   useEffect(() => {
-    const fetchSessions = async () => {
+    const load = async () => {
       try {
-        const data = await getSessions();
-        const mapped = (Array.isArray(data) ? data : []).map(mapApiSession);
-        setSessions(mapped.length > 0 ? mapped : DEMO_SESSIONS);
-      } catch (error) {
-        console.warn('Failed to fetch sessions, using demo data:', error);
-        setSessions(DEMO_SESSIONS);
+        const url = `${API_URL}/api/sessions?limit=300`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        setSessions(Array.isArray(data) ? data : []);
+      } catch (err) {
+        console.warn('Failed to fetch sessions:', err);
+        setSessions([]);
       } finally {
         setLoading(false);
       }
     };
-
-    fetchSessions();
+    load();
   }, []);
 
   const filtered = sessions.filter(r => {
-    const matchPlant = filterPlant === 'all' || r.plant_id === filterPlant;
-    if (!matchPlant) return false;
+    if (filterPlant !== 'all' && r.plant !== filterPlant) return false;
+    if (filterType  !== 'all' && r.type  !== filterType)  return false;
     if (!search.trim()) return true;
     const q = search.trim().toLowerCase();
-    return (
-      r.plant_id.toLowerCase().includes(q) ||
-      plantName(r.plant_id).toLowerCase().includes(q) ||
-      String(r.session_num).includes(q)
-    );
+    return [r.plant, r.lot_no, r.party_name, r.order_no, r.colour_name, r.article_name]
+      .some(v => v?.toLowerCase().includes(q));
   });
 
   return (
@@ -105,23 +81,39 @@ export default function Sessions() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
-          <h1 className="text-2xl font-bold font-[family-name:var(--font-inter-tight)] tracking-tight text-gray-900 dark:text-white">Sessions</h1>
+          <h1 className="text-2xl font-bold font-[family-name:var(--font-inter-tight)] tracking-tight text-gray-900 dark:text-white">
+            Sessions
+          </h1>
           <p className="text-xs text-gray-500 mt-0.5">
-            {filtered.length} session{filtered.length !== 1 ? 's' : ''}
+            {loading ? 'Loading…' : `${filtered.length} session${filtered.length !== 1 ? 's' : ''}`}
           </p>
         </motion.div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap justify-end">
           {/* Search */}
           <div className="flex items-center gap-1.5 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-xl px-3 py-2 shadow-sm">
-            <FiSearch className="text-gray-400 w-3.5 h-3.5 flex-shrink-0" />
+            <FiSearch className="text-gray-400 w-3.5 h-3.5 shrink-0" />
             <input
               type="text"
               value={search}
               onChange={e => setSearch(e.target.value)}
-              placeholder="Search plant or session…"
-              className="bg-transparent text-xs text-gray-700 dark:text-gray-300 focus:outline-none w-44 placeholder-gray-400"
+              placeholder="LOT, party, order…"
+              className="bg-transparent text-xs text-gray-700 dark:text-gray-300 focus:outline-none w-36 placeholder-gray-400"
             />
+          </div>
+
+          {/* Type filter */}
+          <div className="flex items-center gap-1.5 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-xl px-3 py-2 shadow-sm">
+            <FiFilter className="text-gray-400 w-3.5 h-3.5" />
+            <select
+              value={filterType}
+              onChange={e => setFilterType(e.target.value as typeof filterType)}
+              className="bg-transparent text-xs text-gray-700 dark:text-gray-300 focus:outline-none cursor-pointer"
+            >
+              <option value="all">All Types</option>
+              <option value="accounted">Accounted</option>
+              <option value="unaccounted">Unaccounted</option>
+            </select>
           </div>
 
           {/* Plant filter */}
@@ -147,11 +139,11 @@ export default function Sessions() {
         className="glass-card overflow-hidden"
       >
         <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-200px)] custom-scrollbar">
-          <table className="w-full min-w-[700px]">
+          <table className="w-full min-w-[1000px]">
             <thead className="sticky top-0 z-10">
               <tr className="bg-gray-50 dark:bg-[#111111] border-b border-gray-200 dark:border-[#2c2c2c]">
-                {['Plant', 'Session', 'Start (s)', 'Duration', 'Pieces', 'Status'].map(h => (
-                  <th key={h} className="px-5 py-3.5 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
+                {['Plant', 'Type', 'LOT', 'Party', 'Order', 'Color', 'Article', 'Expected', 'Processed', 'Duration', 'Start', 'Status'].map(h => (
+                  <th key={h} className="px-4 py-3.5 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">
                     {h}
                   </th>
                 ))}
@@ -159,51 +151,111 @@ export default function Sessions() {
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-[#2c2c2c]">
               <AnimatePresence initial={false}>
-                {filtered.length === 0 ? (
+                {loading ? (
                   <tr>
-                    <td colSpan={6} className="px-5 py-12 text-center text-sm text-gray-400">
-                      No sessions found — run a plant worker to start logging
+                    <td colSpan={12} className="px-4 py-12 text-center text-sm text-gray-400">
+                      Loading sessions…
+                    </td>
+                  </tr>
+                ) : filtered.length === 0 ? (
+                  <tr>
+                    <td colSpan={12} className="px-4 py-12 text-center text-sm text-gray-400">
+                      No sessions found
                     </td>
                   </tr>
                 ) : filtered.map(row => (
                   <motion.tr
-                    key={row.key ?? `${row.plant_id}-${row.session_num}`}
+                    key={row.session_id}
                     initial={{ opacity: 0, y: -6 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0 }}
-                    transition={{ duration: 0.25 }}
+                    transition={{ duration: 0.2 }}
                     className="hover:bg-gray-50 dark:hover:bg-[#111111] transition-colors"
                   >
-                    <td className="px-5 py-3.5">
-                      <div>
-                        <p className="text-xs font-semibold text-gray-900 dark:text-white">{row.plant_id}</p>
-                        <p className="text-[10px] text-gray-400">{plantName(row.plant_id)}</p>
-                      </div>
+                    {/* Plant */}
+                    <td className="px-4 py-3.5">
+                      <span className="text-xs font-bold text-gray-900 dark:text-white">{row.plant}</span>
                     </td>
-                    <td className="px-5 py-3.5">
-                      <span className="text-sm text-gray-700 dark:text-gray-300 font-medium tabular-nums">#{row.session_num}</span>
+
+                    {/* Type */}
+                    <td className="px-4 py-3.5">
+                      {row.type === 'accounted' ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
+                          Accounted
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800">
+                          Unaccounted
+                        </span>
+                      )}
                     </td>
-                    <td className="px-5 py-3.5 text-sm text-gray-500 tabular-nums">
-                      {row.start_time_s != null ? `${row.start_time_s.toFixed(1)}s` : '--'}
-                    </td>
-                    <td className="px-5 py-3.5 text-sm text-gray-500 tabular-nums">
-                      {fmtDuration(row.duration_s)}
-                    </td>
-                    <td className="px-5 py-3.5">
-                      <span className="text-sm font-semibold text-gray-900 dark:text-white tabular-nums">
-                        {row.piece_count?.toLocaleString() ?? '--'}
+
+                    {/* LOT */}
+                    <td className="px-4 py-3.5">
+                      <span className="text-xs text-gray-700 dark:text-gray-300 font-medium tabular-nums">
+                        {row.lot_no ?? <span className="text-gray-400 italic">—</span>}
                       </span>
                     </td>
-                    <td className="px-5 py-3.5">
-                      {row.is_active ? (
-                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold
-                          bg-[#2AAA8A]/10 border border-[#2AAA8A]/20 text-[#2AAA8A]">
-                          <span className="w-1.5 h-1.5 rounded-full bg-[#2AAA8A] pulse-dot" />
+
+                    {/* Party */}
+                    <td className="px-4 py-3.5 max-w-[130px]">
+                      <span className="text-xs text-gray-700 dark:text-gray-300 truncate block">
+                        {row.party_name ?? <span className="text-gray-400">—</span>}
+                      </span>
+                    </td>
+
+                    {/* Order */}
+                    <td className="px-4 py-3.5">
+                      <span className="text-xs text-gray-500 tabular-nums">{row.order_no ?? '—'}</span>
+                    </td>
+
+                    {/* Color */}
+                    <td className="px-4 py-3.5 max-w-[100px]">
+                      <span className="text-xs text-gray-500 truncate block">{row.colour_name ?? '—'}</span>
+                    </td>
+
+                    {/* Article */}
+                    <td className="px-4 py-3.5 max-w-[130px]">
+                      <span className="text-xs text-gray-500 truncate block">{row.article_name ?? '—'}</span>
+                    </td>
+
+                    {/* Expected */}
+                    <td className="px-4 py-3.5 text-right">
+                      <span className="text-xs text-gray-500 tabular-nums">
+                        {row.expected_pieces != null ? row.expected_pieces.toLocaleString() : '—'}
+                      </span>
+                    </td>
+
+                    {/* Processed */}
+                    <td className="px-4 py-3.5 text-right">
+                      <span className="text-xs font-semibold text-gray-900 dark:text-white tabular-nums">
+                        {row.processed_pieces.toLocaleString()}
+                      </span>
+                    </td>
+
+                    {/* Duration */}
+                    <td className="px-4 py-3.5">
+                      <span className="text-xs text-gray-500 tabular-nums">
+                        {fmtDuration(row.start_time, row.end_time)}
+                      </span>
+                    </td>
+
+                    {/* Start */}
+                    <td className="px-4 py-3.5">
+                      <span className="text-xs text-gray-500 tabular-nums whitespace-nowrap">
+                        {fmtDatetime(row.start_time)}
+                      </span>
+                    </td>
+
+                    {/* Status */}
+                    <td className="px-4 py-3.5">
+                      {row.status === 'INPROCESS' ? (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-[#2AAA8A]/10 border border-[#2AAA8A]/20 text-[#2AAA8A]">
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#2AAA8A] animate-pulse" />
                           Active
                         </span>
                       ) : (
-                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold
-                          bg-gray-100 dark:bg-[#252525] border border-gray-200 dark:border-[#2c2c2c] text-gray-400">
+                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 dark:bg-[#252525] border border-gray-200 dark:border-[#2c2c2c] text-gray-400">
                           Completed
                         </span>
                       )}

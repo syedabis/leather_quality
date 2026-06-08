@@ -34,8 +34,11 @@ import requests
 import torch
 from ultralytics import YOLO
 
+from datetime import datetime
+
 from app.db.connection import get_connection
 from app.db.frame_processor import FrameProcessor
+from app.db.session_manager import session_manager
 
 # ── RTSP stream stability — force TCP transport so UDP packet loss can't
 #    cause "Duplicate POC" / "Could not find ref" decoder errors.
@@ -625,6 +628,8 @@ def _plant_worker(
                     frame_time_delta_s   = frame_time_delta if count_idle else 0,
                     idle_sessions_delta  = new_idle_session if count_idle else 0,
                 )
+                if piece_delta > 0:
+                    session_manager.on_piece_detected(unit, datetime.now())
             new_idle_session = 0
 
             # ── Render display frame (full original resolution) ────────────
@@ -778,6 +783,9 @@ def main() -> None:
         cv2.resizeWindow(unit, DISPLAY_W, DISPLAY_H)
         cv2.moveWindow(unit, x, y)
 
+    # Start session manager (polls AppSessions + handles timers)
+    session_manager.start()
+
     # Start one worker thread per plant
     threads = []
     for unit in UNITS:
@@ -812,6 +820,7 @@ def main() -> None:
             break
 
     stop_event.set()
+    session_manager.stop()
     for t in threads:
         t.join(timeout=5)
     cv2.destroyAllWindows()
