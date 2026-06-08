@@ -19,8 +19,8 @@ from app.db.connection import get_connection
 POLL_INTERVAL_S             = 5     # how often to poll AppSessions
 CONSECUTIVE_FOR_UNACCOUNTED = 5     # pieces needed to auto-open unaccounted session
 CONSECUTIVE_GAP_RESET_S     = 120   # gap (s) between pieces that resets the buffer
-ACCOUNTED_GRACE_S           = 600   # 10 min silence → end accounted session
-UNACCOUNTED_IDLE_S          = 900   # 15 min silence → end unaccounted session
+ACCOUNTED_GRACE_S           = 180   # TESTING: 3 min silence → end accounted session (normally 600 = 10 min)
+UNACCOUNTED_IDLE_S          = 180   # TESTING: 3 min silence → end unaccounted session (normally 900 = 15 min)
 TIMER_CHECK_INTERVAL_S      = 30    # how often to check timers
 
 
@@ -58,9 +58,40 @@ class SessionManager:
 
     def start(self) -> None:
         self._stop.clear()
+        self._close_orphaned_unaccounted_sessions()
         threading.Thread(target=self._poll_loop,  name="sm-poller", daemon=True).start()
         threading.Thread(target=self._timer_loop, name="sm-timer",  daemon=True).start()
         print("[SessionManager] started (poll every 5s, timers every 30s)")
+
+    def _close_orphaned_unaccounted_sessions(self) -> None:
+        """
+        Unaccounted sessions only exist in this process's memory — if it restarts
+        (crash, redeploy, manual restart) any unaccounted session left INPROCESS
+        in the DB becomes invisible to the new instance (the poller skips
+        LotNo IS NULL rows, assuming they're its own tracked sessions). Without
+        this, such rows stay INPROCESS forever. We can't resume piece-counting
+        for them reliably, so close them out with whatever counts they last had.
+        """
+        try:
+            with get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    UPDATE dbo.AppSessions
+                    SET EndTime = GETDATE(), Status = 'COMPLETED'
+                    OUTPUT DELETED.SessionId, DELETED.Plant, DELETED.ProcessedPieces
+                    WHERE LotNo IS NULL AND Status = 'INPROCESS'
+                    """
+                )
+                rows = cur.fetchall()
+                conn.commit()
+            for sid, plant, proc_pcs in rows:
+                print(
+                    f"[SessionManager] Closed orphaned unaccounted session {sid} "
+                    f"(plant={plant}, pieces={proc_pcs}) left INPROCESS by a previous run"
+                )
+        except Exception as exc:
+            print(f"[SessionManager] Failed to close orphaned unaccounted sessions: {exc}")
 
     def stop(self) -> None:
         self._stop.set()

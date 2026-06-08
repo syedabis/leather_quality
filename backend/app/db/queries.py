@@ -384,7 +384,7 @@ def get_active_sessions() -> dict[str, dict | None]:
         FROM dbo.AppSessions s
         LEFT JOIN dbo.WBIssuance_Info wb ON wb.IssueNoCounter = s.IssueNoCounter
         WHERE s.Status = 'INPROCESS'
-        ORDER BY s.StartTime DESC
+        ORDER BY s.SessionId DESC
     """
     result: dict[str, dict | None] = {u: None for u in UNITS}
     seen: set[str] = set()

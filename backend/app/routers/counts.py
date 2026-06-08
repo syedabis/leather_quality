@@ -78,7 +78,7 @@ def get_unit_status():
 
 # ── Sessions ──────────────────────────────────────────────────────────────────
 
-@router.get("/sessions")
+@router.get("/monitoring-sessions")
 def get_sessions(
     unit: str | None = Query(None),
     from_date: str | None = Query(None, alias="from"),
