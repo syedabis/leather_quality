@@ -704,8 +704,7 @@ export default function Settings() {
           </motion.div>
         )}
 
-        {/* ── Plant Targets (admin only) ──────────────────────────────── */}
-        {role === 'admin' && (
+        {/* ── Plant Targets ───────────────────────────────────────────── */}
           <motion.div
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
@@ -815,7 +814,6 @@ export default function Settings() {
               </div>
             )}
           </motion.div>
-        )}
 
         {/* ── Database Management (admin only) ─────────────────────────── */}
         {role === 'admin' && (
