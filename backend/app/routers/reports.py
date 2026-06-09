@@ -11,9 +11,13 @@ import os
 import sys
 from datetime import date as _date
 from decimal import Decimal
+from io import BytesIO
 from pathlib import Path
 
+import openpyxl
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
+from openpyxl.styles import Alignment, Font, PatternFill
 from pydantic import BaseModel
 
 # ── Sibling package paths (used only by send/preview endpoints) ───────────────
@@ -21,7 +25,7 @@ _ROOT   = Path(__file__).resolve().parents[3]   # spray-plant/
 _CLIENT = _ROOT / "client-shared"
 
 from app.db.connection import get_connection
-from app.db.queries import UNITS, PLANT_NAMES
+from app.db.queries import UNITS, PLANT_NAMES, get_daily_detail, get_plant_wise
 
 
 def _ensure_report_deps():
@@ -329,5 +333,206 @@ def send_report(req: ReportRequest):
             "pdf":       str(pdf_path),
         }
 
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ── New report endpoints ───────────────────────────────────────────────────────
+
+def _shift_hours() -> tuple[str, str, float]:
+    """Return (shift_start, shift_end, available_hours) from SystemSettings."""
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT setting_key, setting_value FROM dbo.SystemSettings "
+            "WHERE setting_key IN ('shift_start','shift_end')"
+        )
+        sett = {r[0]: r[1] for r in cur.fetchall()}
+    ss = sett.get("shift_start", "07:00")
+    se = sett.get("shift_end",   "17:00")
+    sh, sm = map(int, ss.split(":"))
+    eh, em = map(int, se.split(":"))
+    return ss, se, round((eh * 60 + em - sh * 60 - sm) / 60, 1)
+
+
+@router.get("/daily-detail")
+def daily_detail_endpoint(
+    date_param: str = Query(str(_date.today()), alias="date"),
+    plant: str | None = Query(None),
+):
+    try:
+        return get_daily_detail(date_param, plant=plant)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@router.get("/plant-wise")
+def plant_wise_endpoint(
+    from_date: str = Query(..., alias="from"),
+    to_date:   str = Query(..., alias="to"),
+    plant:     str | None = Query(None),
+):
+    try:
+        _, _, avail_h = _shift_hours()
+        rows = get_plant_wise(from_date, to_date, plant=plant, available_hours=avail_h)
+        return {"from": from_date, "to": to_date, "plant": plant,
+                "available_hours": avail_h, "rows": rows}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+# ── Excel download ─────────────────────────────────────────────────────────────
+
+def _xl_hrow(ws, values: list, bg: str = "1E3A5F", fg: str = "FFFFFF") -> None:
+    ws.append(values)
+    fill = PatternFill("solid", fgColor=bg)
+    font = Font(bold=True, color=fg)
+    aln  = Alignment(horizontal="center")
+    for col in range(1, len(values) + 1):
+        c = ws.cell(ws.max_row, col)
+        c.fill = fill
+        c.font = font
+        c.alignment = aln
+
+
+def _xl_auto_width(ws, min_w: int = 12, max_w: int = 30) -> None:
+    for col in ws.columns:
+        best = min_w
+        for cell in col:
+            try:
+                best = max(best, len(str(cell.value or "")))
+            except Exception:
+                pass
+        ws.column_dimensions[col[0].column_letter].width = min(best + 2, max_w)
+
+
+@router.get("/download")
+def download_report_excel(
+    report_type: str = Query("daily_summary", alias="type"),
+    date_param:  str = Query(str(_date.today()), alias="date"),
+    from_date:   str | None = Query(None, alias="from"),
+    to_date:     str | None = Query(None, alias="to"),
+    plant:       str | None = Query(None),
+):
+    """Return an .xlsx file — type: daily_summary | daily_detail | plant_wise | all"""
+    try:
+        _, _, avail_h = _shift_hours()
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
+
+        idle_fill = PatternFill("solid", fgColor="FFF3CD")
+
+        # ── Sheet: Plant Wise ──────────────────────────────────────────────
+        if report_type in ("plant_wise", "all"):
+            f = from_date or date_param
+            t = to_date   or date_param
+            pw = get_plant_wise(f, t, plant=plant, available_hours=avail_h)
+            ws = wb.create_sheet("Plant Wise")
+            ws.append(["PLANT WISE REPORT"])
+            ws.cell(1, 1).font = Font(bold=True, size=13)
+            ws.append(["Start Date", f]);  ws.append(["End Date", t])
+            ws.append(["Plant", plant or "All Plants"]); ws.append([])
+            _xl_hrow(ws, ["Date", "Plant", "Total Run Time", "Total Idle Time",
+                          "Pieces Processed", "Utilisation %"])
+            for r in pw:
+                ws.append([r["date"], r["plant"], r["run_time_label"],
+                           r["idle_time_label"], r["pieces"],
+                           f'{r["utilization_pct"]}%'])
+            _xl_auto_width(ws)
+
+        # ── Sheet: Daily Report ────────────────────────────────────────────
+        if report_type in ("daily_detail", "all"):
+            detail = get_daily_detail(date_param, plant=plant)
+            ws = wb.create_sheet("Daily Report")
+            ws.append(["DAILY REPORT"])
+            ws.cell(1, 1).font = Font(bold=True, size=13)
+            ws.append(["Date", date_param])
+            ws.append(["Plant", plant or "All Plants"]); ws.append([])
+            cols = ["Process Date", "Lot No", "Order No", "Party Name",
+                    "Article Name", "Colour Name", "PCS", "Plant",
+                    "Process Start", "Process End", "Duration"]
+            for pd in detail.get("plants", []):
+                _xl_hrow(ws, [f"Plant: {pd['plant']}"] + [""] * (len(cols) - 1))
+                _xl_hrow(ws, cols)
+                for row in pd["rows"]:
+                    if row["row_type"] == "session":
+                        ws.append([
+                            date_param,
+                            row["lot_no"],
+                            row.get("order_no",    ""),
+                            row.get("party_name",  ""),
+                            row.get("article_name",""),
+                            row.get("colour_name", ""),
+                            row.get("pieces",      0),
+                            pd["plant"],
+                            row["start_time"],
+                            row["end_time"],
+                            row["duration_label"],
+                        ])
+                    else:
+                        ri = ws.max_row + 1
+                        ws.append([None, None, None, "IDLE TIME", None, None,
+                                   None, None, row["start_time"],
+                                   row["end_time"], row["duration_label"]])
+                        for col in range(1, len(cols) + 1):
+                            ws.cell(ri, col).fill = idle_fill
+                t2 = pd["totals"]
+                ws.append([])
+                for lbl, val in [("Total Run Time",   t2["run_label"]),
+                                  ("Total Idle Time",  t2["idle_label"]),
+                                  ("Pieces Processed", t2["pieces"]),
+                                  ("Utilisation",      f'{t2["utilization_pct"]}%')]:
+                    ws.append([None, None, None, None, None, None, lbl, None, val])
+                ws.append([])
+            _xl_auto_width(ws)
+
+        # ── Sheet: Daily Summary ───────────────────────────────────────────
+        if report_type in ("daily_summary", "all"):
+            sd = daily_summary(date_param=date_param)
+            ws = wb.create_sheet("Daily Summary")
+            ws.append(["DADA ENTERPRISES — SPRAY PLANT DAILY REPORT"])
+            ws.cell(1, 1).font = Font(bold=True, size=13)
+            ws.append([f"Report Date: {date_param}"]); ws.append([])
+            ws.append(["SECTION 1 — PLANT UTILISATION (%)"])
+            ws.cell(ws.max_row, 1).font = Font(bold=True)
+            _xl_hrow(ws, ["Plant", "Available Hours", "Run Time (hrs)",
+                          "Idle Time (hrs)", "Utilisation %", "Status"])
+            for p in sd["plants"]:
+                ws.append([p["unit"], p["available_hours"], p["shift_run_hrs"],
+                           p["idle_time_hrs"], f'{p["utilization_pct"]}%',
+                           p["util_status"]])
+            avg = (sum(p["utilization_pct"] for p in sd["plants"]) / len(sd["plants"])
+                   if sd["plants"] else 0)
+            ws.append(["Average Utilisation (All Plants)", None, None, None,
+                       f'{avg:.1f}%'])
+            ws.cell(ws.max_row, 1).font = Font(bold=True)
+            ws.append([])
+            ws.append(["SECTION 2 — PIECES PASSED PER PLANT"])
+            ws.cell(ws.max_row, 1).font = Font(bold=True)
+            _xl_hrow(ws, ["Plant", "Pieces", "Daily Target", "Achievement %",
+                          "vs Target", "Status"])
+            for p in sd["plants"]:
+                diff = p["pieces"] - p["daily_target"]
+                ws.append([p["unit"], p["pieces"], p["daily_target"],
+                           f'{p["achievement_pct"]}%', diff, p["piece_status"]])
+            tp = sum(p["pieces"]       for p in sd["plants"])
+            tt = sum(p["daily_target"] for p in sd["plants"])
+            ws.append(["Total (All Plants)", tp, tt,
+                       f'{round(tp/tt*100,1) if tt else 0}%',
+                       tp - tt])
+            ws.cell(ws.max_row, 1).font = Font(bold=True)
+            ws.append([])
+            ws.append(["Auto-generated by Spray Plant Monitoring System — Dada Enterprises, Kasur"])
+            _xl_auto_width(ws)
+
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        fname = f"SprayPlant_{report_type}_{date_param}.xlsx"
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))

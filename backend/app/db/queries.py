@@ -467,3 +467,167 @@ def get_app_sessions(plant: str | None = None, limit: int = 200) -> list[dict]:
         print(f"[queries] get_app_sessions error: {exc}")
 
     return results
+
+
+# ── Report helpers ─────────────────────────────────────────────────────────
+
+def _fmt_duration(seconds: int) -> str:
+    h = int(abs(seconds) // 3600)
+    m = int((abs(seconds) % 3600) // 60)
+    return f"{h} Hour {m} Min"
+
+
+def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
+    """Session-level detail for one date with idle gaps filled in between sessions."""
+    params: list = [report_date]
+    plant_filter = ""
+    if plant:
+        plant_filter = "AND s.Plant = ?"
+        params.append(plant)
+
+    sql = f"""
+        SELECT s.SessionId, s.LotNo, s.Plant, s.StartTime, s.EndTime,
+               s.ExpectedPieces, s.ProcessedPieces,
+               wb.OrderNo, wb.ArticleName, wb.ColourName, wb.PartyName
+        FROM dbo.AppSessions s
+        LEFT JOIN dbo.WBIssuance_Info wb ON wb.IssueNoCounter = s.IssueNoCounter
+        WHERE CAST(s.StartTime AS DATE) = ?
+          AND s.Status = 'COMPLETED'
+          AND s.EndTime IS NOT NULL
+          {plant_filter}
+        ORDER BY s.Plant, s.StartTime
+    """
+
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(sql, params)
+            raw_rows = cur.fetchall()
+    except Exception as exc:
+        return {"error": str(exc), "date": report_date, "plants": []}
+
+    from collections import defaultdict
+    by_plant: dict[str, list] = defaultdict(list)
+    for row in raw_rows:
+        (sid, lot_no, plant_id, start_time, end_time,
+         exp_pcs, proc_pcs, order_no, article_name, colour_name, party_name) = row
+        by_plant[plant_id].append({
+            "start_time": start_time,
+            "end_time":   end_time,
+            "lot_no":     str(lot_no) if lot_no else None,
+            "pieces":     int(proc_pcs) if proc_pcs else 0,
+            "order_no":   order_no,
+            "article_name": article_name,
+            "colour_name":  colour_name,
+            "party_name":   party_name,
+        })
+
+    result_plants = []
+    for plant_id in sorted(by_plant.keys()):
+        sessions      = by_plant[plant_id]
+        rows_out      = []
+        total_run_s   = 0
+        total_idle_s  = 0
+        total_pieces  = 0
+
+        for i, s in enumerate(sessions):
+            dur_s = int((s["end_time"] - s["start_time"]).total_seconds())
+            if dur_s < 0:
+                dur_s = 0
+            total_run_s  += dur_s
+            total_pieces += s["pieces"]
+            rows_out.append({
+                "row_type":       "session",
+                "lot_no":         s["lot_no"] or "UNACCOUNTED",
+                "order_no":       s["order_no"]     or "",
+                "party_name":     s["party_name"]   or "",
+                "article_name":   s["article_name"] or "",
+                "colour_name":    s["colour_name"]  or "",
+                "pieces":         s["pieces"],
+                "plant":          plant_id,
+                "start_time":     s["start_time"].strftime("%H:%M"),
+                "end_time":       s["end_time"].strftime("%H:%M"),
+                "duration_label": _fmt_duration(dur_s),
+            })
+            if i < len(sessions) - 1:
+                gap_s = int((sessions[i + 1]["start_time"] - s["end_time"]).total_seconds())
+                if gap_s > 60:
+                    total_idle_s += gap_s
+                    rows_out.append({
+                        "row_type":       "idle",
+                        "label":          "IDLE TIME",
+                        "start_time":     s["end_time"].strftime("%H:%M"),
+                        "end_time":       sessions[i + 1]["start_time"].strftime("%H:%M"),
+                        "duration_label": _fmt_duration(gap_s),
+                    })
+
+        observed_s  = total_run_s + total_idle_s
+        util_pct    = round(total_run_s / observed_s * 100, 1) if observed_s else 0
+        result_plants.append({
+            "plant": plant_id,
+            "rows":  rows_out,
+            "totals": {
+                "run_label":       _fmt_duration(total_run_s),
+                "idle_label":      _fmt_duration(total_idle_s),
+                "run_time_min":    round(total_run_s  / 60),
+                "idle_time_min":   round(total_idle_s / 60),
+                "pieces":          total_pieces,
+                "utilization_pct": util_pct,
+            },
+        })
+
+    return {"date": report_date, "plants": result_plants}
+
+
+def get_plant_wise(from_date: str, to_date: str,
+                   plant: str | None = None,
+                   available_hours: float = 10.0) -> list[dict]:
+    """Per-day, per-plant summary over a date range."""
+    params: list = [from_date, to_date]
+    plant_filter = ""
+    if plant:
+        plant_filter = "AND s.Plant = ?"
+        params.append(plant)
+
+    sql = f"""
+        SELECT
+            CAST(s.StartTime AS DATE)                           AS report_date,
+            s.Plant,
+            ISNULL(SUM(s.ProcessedPieces), 0)                  AS total_pieces,
+            ISNULL(SUM(DATEDIFF(SECOND, s.StartTime, s.EndTime)), 0) AS run_time_s
+        FROM dbo.AppSessions s
+        WHERE s.Status = 'COMPLETED'
+          AND s.EndTime IS NOT NULL
+          AND CAST(s.StartTime AS DATE) BETWEEN ? AND ?
+          {plant_filter}
+        GROUP BY CAST(s.StartTime AS DATE), s.Plant
+        ORDER BY CAST(s.StartTime AS DATE), s.Plant
+    """
+
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(sql, params)
+            raw_rows = cur.fetchall()
+    except Exception as exc:
+        print(f"[queries] get_plant_wise error: {exc}")
+        return []
+
+    avail_s = available_hours * 3600
+    result  = []
+    for row in raw_rows:
+        report_date, plant_id, total_pieces, run_time_s = row
+        run_time_s  = max(0, int(run_time_s  or 0))
+        idle_time_s = max(0, int(avail_s) - run_time_s)
+        util_pct    = round(run_time_s / avail_s * 100, 1) if avail_s else 0
+        result.append({
+            "date":             str(report_date),
+            "plant":            plant_id,
+            "run_time_label":   _fmt_duration(run_time_s),
+            "idle_time_label":  _fmt_duration(idle_time_s),
+            "run_time_s":       run_time_s,
+            "idle_time_s":      idle_time_s,
+            "pieces":           int(total_pieces or 0),
+            "utilization_pct":  util_pct,
+        })
+    return result
