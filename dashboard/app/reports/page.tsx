@@ -74,9 +74,9 @@ function Th({ children }: { children: React.ReactNode }) {
   );
 }
 
-function Td({ children, className = '' }: { children: React.ReactNode; className?: string }) {
+function Td({ children, className = '', colSpan }: { children?: React.ReactNode; className?: string; colSpan?: number }) {
   return (
-    <td className={`px-4 py-3 text-center text-sm ${className}`}>{children}</td>
+    <td colSpan={colSpan} className={`px-4 py-3 text-center text-sm ${className}`}>{children}</td>
   );
 }
 
