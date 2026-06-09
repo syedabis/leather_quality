@@ -190,8 +190,8 @@ def _per_unit_summary(report_date: str) -> list[dict]:
 def daily_summary(date_param: str = Query(str(_date.today()), alias="date")):
     """
     Returns the two-section daily report data for the reports page.
-    Section 1: per-unit utilisation (available hrs, shift run, idle, utilisation %, status)
-    Section 2: per-unit pieces (pieces, daily target, achievement %, status)
+    Section 1: per-unit utilisation (available hrs, shift run, idle, utilisation %)
+    Section 2: per-unit pieces (pieces, daily target, achievement %)
     """
     try:
         with get_connection() as conn:
@@ -207,60 +207,73 @@ def daily_summary(date_param: str = Query(str(_date.today()), alias="date")):
             shift_end   = settings.get("shift_end",   "17:00")
             sh, sm = map(int, shift_start.split(":"))
             eh, em = map(int, shift_end.split(":"))
-            available_hours = round((eh * 60 + em - sh * 60 - sm) / 60, 1)
+            available_s     = (eh * 60 + em - sh * 60 - sm) * 60
+            available_hours = round(available_s / 3600, 1)
 
-            # Per-unit day analytics
-            cur.execute(
-                "EXEC sp_analytics_by_day @unit=?, @from_date=?, @to_date=?",
-                (None, date_param, date_param)
-            )
-            rows = cur.fetchall()
-
-            # Daily targets — check PlantTargetPeriods first (date-aware),
-            # fall back to flat PlantTargets for any plant not covered.
-            cur.execute("SELECT unit, daily_target FROM dbo.PlantTargets")
-            targets = {r[0]: int(r[1]) for r in cur.fetchall()}
-
-            # Fetch the most recent period target per unit (plant-specific beats ALL)
+            # Per-unit analytics from AppSessions (COMPLETED sessions only)
             cur.execute(
                 """
-                IF OBJECT_ID('dbo.PlantTargetPeriods', 'U') IS NOT NULL
-                SELECT unit, daily_target
-                FROM (
-                    SELECT unit, daily_target,
-                           ROW_NUMBER() OVER (PARTITION BY unit ORDER BY from_date DESC, id DESC) AS rn
-                    FROM dbo.PlantTargetPeriods
-                    WHERE from_date <= ?
-                ) t WHERE rn = 1
+                SELECT
+                    Plant,
+                    ISNULL(SUM(ProcessedPieces), 0)                        AS pieces,
+                    ISNULL(SUM(DATEDIFF(SECOND, StartTime, EndTime)), 0)   AS run_s
+                FROM dbo.AppSessions
+                WHERE CAST(StartTime AS DATE) = ?
+                  AND Status = 'COMPLETED'
+                  AND EndTime IS NOT NULL
+                GROUP BY Plant
                 """,
                 (date_param,),
             )
-            period_rows = cur.fetchall() or []
-            period_all = None
-            period_by_unit: dict[str, int] = {}
-            for unit_p, tgt_p in period_rows:
-                if unit_p == "ALL":
-                    period_all = int(tgt_p)
-                else:
-                    period_by_unit[unit_p] = int(tgt_p)
+            session_rows = {r[0]: {"pieces": int(r[1] or 0), "run_s": int(r[2] or 0)}
+                            for r in cur.fetchall()}
 
+            # Flat targets fallback
+            cur.execute("SELECT unit, daily_target FROM dbo.PlantTargets")
+            flat_targets = {r[0]: int(r[1]) for r in cur.fetchall()}
+
+            # Date-aware period targets (PlantTargetPeriods) — safe try/except
+            period_all: int | None = None
+            period_by_unit: dict[str, int] = {}
+            try:
+                cur.execute(
+                    """
+                    SELECT unit, daily_target
+                    FROM (
+                        SELECT unit, daily_target,
+                               ROW_NUMBER() OVER (PARTITION BY unit ORDER BY from_date DESC, id DESC) AS rn
+                        FROM dbo.PlantTargetPeriods
+                        WHERE from_date <= ?
+                    ) t WHERE rn = 1
+                    """,
+                    (date_param,),
+                )
+                for unit_p, tgt_p in (cur.fetchall() or []):
+                    if unit_p == "ALL":
+                        period_all = int(tgt_p)
+                    else:
+                        period_by_unit[unit_p] = int(tgt_p)
+            except Exception:
+                pass  # table doesn't exist yet — fall back to flat_targets
+
+        from app.db.queries import UNITS
         plants = []
-        for row in rows:
-            unit          = row[1]
-            pieces        = int(row[2] or 0)
-            uptime_pct    = float(row[3] or 0)
-            idle_time_s   = float(row[6] or 0)
-            utilization   = float(row[7] or 0)
-            shift_run_hrs = round(available_hours * uptime_pct / 100, 1)
-            idle_hrs      = round(idle_time_s / 3600, 1)
-            daily_target  = period_by_unit.get(unit) or period_all or targets.get(unit, 1500)
-            achievement   = round(pieces / daily_target * 100, 1) if daily_target else 0
+        for unit in UNITS:
+            d             = session_rows.get(unit, {"pieces": 0, "run_s": 0})
+            pieces        = d["pieces"]
+            run_s         = d["run_s"]
+            idle_s        = max(available_s - run_s, 0)
+            utilization   = round(run_s / available_s * 100, 1) if available_s else 0.0
+            shift_run_hrs = round(run_s / 3600, 1)
+            idle_hrs      = round(idle_s / 3600, 1)
+            daily_target  = period_by_unit.get(unit) or period_all or flat_targets.get(unit, 1500)
+            achievement   = round(pieces / daily_target * 100, 1) if daily_target else 0.0
             plants.append({
                 "unit":             unit,
                 "available_hours":  available_hours,
                 "shift_run_hrs":    shift_run_hrs,
                 "idle_time_hrs":    idle_hrs,
-                "utilization_pct":  round(utilization, 1),
+                "utilization_pct":  utilization,
                 "util_status":      "On Target" if utilization >= 90 else "Monitor",
                 "pieces":           pieces,
                 "daily_target":     daily_target,
