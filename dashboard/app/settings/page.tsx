@@ -2,7 +2,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useUser } from '@clerk/nextjs';
 import { motion } from 'framer-motion';
-import { FiCamera, FiCheck, FiAlertCircle, FiUser, FiMail, FiShield, FiSliders, FiTrash2, FiCalendar, FiPlus, FiCoffee } from 'react-icons/fi';
+import { FiCamera, FiCheck, FiAlertCircle, FiUser, FiMail, FiShield, FiSliders, FiTrash2, FiCalendar, FiPlus, FiCoffee, FiTarget } from 'react-icons/fi';
 import { API_URL } from '../../lib/constants';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -51,6 +51,14 @@ export default function Settings() {
   const [holidayBusy,        setHolidayBusy]         = useState(false);
   const [holidayStatus,      setHolidayStatus]       = useState<'idle' | 'success' | 'error'>('idle');
 
+  // Plant Targets state
+  const [targets,         setTargets]        = useState<{id: number; unit: string; from_date: string; daily_target: number}[]>([]);
+  const [newTargetUnit,   setNewTargetUnit]  = useState('ALL');
+  const [newTargetDate,   setNewTargetDate]  = useState('');
+  const [newTargetValue,  setNewTargetValue] = useState('');
+  const [targetBusy,      setTargetBusy]     = useState(false);
+  const [targetStatus,    setTargetStatus]   = useState<'idle' | 'success' | 'error'>('idle');
+
   const fileRef = useRef<HTMLInputElement>(null);
 
   // Load system settings + holidays on mount
@@ -78,6 +86,10 @@ export default function Settings() {
     fetch(`${API_URL}/api/settings/holidays`, { cache: 'no-store' })
       .then(r => r.ok ? r.json() : [])
       .then(setHolidays)
+      .catch(() => {});
+    fetch(`${API_URL}/api/settings/targets`, { cache: 'no-store' })
+      .then(r => r.ok ? r.json() : [])
+      .then(setTargets)
       .catch(() => {});
   }, []);
 
@@ -133,6 +145,33 @@ export default function Settings() {
       setTimeout(() => setHolidayStatus('idle'), 3000);
     }
   }, [newHolidayDate, newHolidayDesc]);
+
+  const handleAddTarget = useCallback(async () => {
+    if (!newTargetDate || !newTargetValue) return;
+    setTargetBusy(true); setTargetStatus('idle');
+    try {
+      const res = await fetch(`${API_URL}/api/settings/targets`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ unit: newTargetUnit, from_date: newTargetDate, daily_target: parseInt(newTargetValue) }),
+      });
+      if (!res.ok) throw new Error('Failed');
+      const refreshed = await fetch(`${API_URL}/api/settings/targets`, { cache: 'no-store' }).then(r => r.json());
+      setTargets(refreshed);
+      setNewTargetDate(''); setNewTargetValue('');
+      setTargetStatus('success');
+    } catch { setTargetStatus('error'); }
+    finally { setTargetBusy(false); setTimeout(() => setTargetStatus('idle'), 3000); }
+  }, [newTargetUnit, newTargetDate, newTargetValue]);
+
+  const handleDeleteTarget = useCallback(async (id: number) => {
+    setTargetBusy(true);
+    try {
+      await fetch(`${API_URL}/api/settings/targets/${id}`, { method: 'DELETE' });
+      setTargets(prev => prev.filter(t => t.id !== id));
+    } catch { setTargetStatus('error'); setTimeout(() => setTargetStatus('idle'), 3000); }
+    finally { setTargetBusy(false); }
+  }, []);
 
   const handleDeleteHoliday = useCallback(async (date: string) => {
     setHolidayBusy(true);
@@ -650,6 +689,119 @@ export default function Settings() {
                           <button
                             onClick={() => handleDeleteHoliday(h.date)}
                             disabled={holidayBusy}
+                            className="text-red-500 hover:text-red-600 disabled:opacity-50"
+                            title="Remove"
+                          >
+                            <FiTrash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </motion.div>
+        )}
+
+        {/* ── Plant Targets (admin only) ──────────────────────────────── */}
+        {role === 'admin' && (
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.21 }}
+            className="bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-2xl p-6 shadow-sm"
+          >
+            <div className="flex items-center gap-2 mb-4">
+              <FiTarget className="w-4 h-4 text-[#2AAA8A]" />
+              <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-widest">Plant Targets</p>
+            </div>
+
+            <p className="text-[11px] text-gray-400 mb-4">
+              Set daily piece targets per plant, effective from a chosen date. A plant-specific target
+              takes priority over an &ldquo;All Plants&rdquo; target. The most recent applicable entry is used
+              when generating reports.
+            </p>
+
+            {/* Add new target */}
+            <div className="grid grid-cols-12 gap-2 mb-3">
+              <select
+                value={newTargetUnit}
+                onChange={e => setNewTargetUnit(e.target.value)}
+                className="col-span-3 px-3 py-2 text-sm bg-gray-50 dark:bg-[#111111] border border-gray-200 dark:border-[#2c2c2c] rounded-xl
+                  text-gray-900 dark:text-white focus:outline-none focus:border-[#2AAA8A] transition-all"
+              >
+                <option value="ALL">All Plants</option>
+                {['SP-01','SP-02','SP-03','SP-04','SP-05','SP-06'].map(p => (
+                  <option key={p} value={p}>{p}</option>
+                ))}
+              </select>
+              <input
+                type="date"
+                value={newTargetDate}
+                onChange={e => setNewTargetDate(e.target.value)}
+                className="col-span-3 px-3 py-2 text-sm bg-gray-50 dark:bg-[#111111] border border-gray-200 dark:border-[#2c2c2c] rounded-xl
+                  text-gray-900 dark:text-white focus:outline-none focus:border-[#2AAA8A] transition-all"
+              />
+              <input
+                type="number"
+                placeholder="Daily target (pcs)"
+                value={newTargetValue}
+                onChange={e => setNewTargetValue(e.target.value)}
+                min={1}
+                className="col-span-4 px-3 py-2 text-sm bg-gray-50 dark:bg-[#111111] border border-gray-200 dark:border-[#2c2c2c] rounded-xl
+                  text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:border-[#2AAA8A] transition-all"
+              />
+              <button
+                onClick={handleAddTarget}
+                disabled={!newTargetDate || !newTargetValue || targetBusy}
+                className="col-span-2 inline-flex items-center justify-center gap-1 px-3 py-2 bg-[#2AAA8A] hover:bg-[#249978] text-white text-xs font-semibold rounded-xl
+                  disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+              >
+                <FiPlus className="w-3.5 h-3.5" /> Add
+              </button>
+            </div>
+
+            {targetStatus !== 'idle' && (
+              <div className={`flex items-center gap-2 px-3 py-2 mb-3 rounded-xl text-xs font-medium border ${
+                targetStatus === 'success'
+                  ? 'bg-green-50 border-green-200 text-green-700'
+                  : 'bg-red-50 border-red-200 text-red-600'
+              }`}>
+                {targetStatus === 'success'
+                  ? <><FiCheck className="w-3.5 h-3.5" /> Target saved</>
+                  : <><FiAlertCircle className="w-3.5 h-3.5" /> Failed to save target</>}
+              </div>
+            )}
+
+            {/* Existing targets */}
+            {targets.length === 0 ? (
+              <p className="text-xs text-gray-400 italic">No targets configured. Reports use the default of 1,500 pcs/day.</p>
+            ) : (
+              <div className="border border-gray-100 dark:border-[#2c2c2c] rounded-xl overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-50 dark:bg-[#111111]">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Plant</th>
+                      <th className="px-3 py-2 text-left font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">From Date</th>
+                      <th className="px-3 py-2 text-right font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Daily Target</th>
+                      <th className="px-3 py-2 w-12" />
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 dark:divide-[#2c2c2c]">
+                    {targets.map(t => (
+                      <tr key={t.id} className="hover:bg-gray-50 dark:hover:bg-[#111111]">
+                        <td className="px-3 py-2 font-medium text-gray-900 dark:text-white">
+                          {t.unit === 'ALL' ? <span className="text-[#2AAA8A]">All Plants</span> : t.unit}
+                        </td>
+                        <td className="px-3 py-2 text-gray-600 dark:text-gray-300">{t.from_date}</td>
+                        <td className="px-3 py-2 text-right font-semibold text-gray-900 dark:text-white">
+                          {t.daily_target.toLocaleString()} pcs
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <button
+                            onClick={() => handleDeleteTarget(t.id)}
+                            disabled={targetBusy}
                             className="text-red-500 hover:text-red-600 disabled:opacity-50"
                             title="Remove"
                           >

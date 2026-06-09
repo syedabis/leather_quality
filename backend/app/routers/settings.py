@@ -179,3 +179,81 @@ def delete_holiday(holiday_date: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
+
+
+# ── Plant Targets ─────────────────────────────────────────────────────────────
+
+def _ensure_targets_table(cur) -> None:
+    cur.execute(
+        """
+        IF OBJECT_ID('dbo.PlantTargetPeriods', 'U') IS NULL
+        CREATE TABLE dbo.PlantTargetPeriods (
+            id           INT IDENTITY PRIMARY KEY,
+            unit         VARCHAR(10)  NOT NULL,
+            from_date    DATE         NOT NULL,
+            daily_target INT          NOT NULL,
+            created_at   DATETIME2    DEFAULT GETDATE()
+        );
+        """
+    )
+
+
+class TargetCreate(BaseModel):
+    unit:         str = Field(..., description="Plant ID e.g. SP-01, or 'ALL'")
+    from_date:    str = Field(..., description="YYYY-MM-DD — target applies from this date onwards")
+    daily_target: int = Field(..., ge=1, le=999999)
+
+
+@router.get("/targets")
+def list_targets():
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            _ensure_targets_table(cur)
+            cur.execute(
+                "SELECT id, unit, CONVERT(varchar(10), from_date, 23), daily_target "
+                "FROM dbo.PlantTargetPeriods ORDER BY from_date DESC, id DESC"
+            )
+            rows = [{"id": r[0], "unit": r[1], "from_date": r[2], "daily_target": r[3]}
+                    for r in cur.fetchall()]
+        return rows
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.post("/targets")
+def add_target(body: TargetCreate):
+    try:
+        _date.fromisoformat(body.from_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="from_date must be YYYY-MM-DD")
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            _ensure_targets_table(cur)
+            cur.execute(
+                "INSERT INTO dbo.PlantTargetPeriods (unit, from_date, daily_target) "
+                "OUTPUT INSERTED.id VALUES (?, ?, ?)",
+                (body.unit, body.from_date, body.daily_target),
+            )
+            new_id = cur.fetchone()[0]
+            conn.commit()
+        return {"status": "ok", "id": new_id, "unit": body.unit,
+                "from_date": body.from_date, "daily_target": body.daily_target}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.delete("/targets/{target_id}")
+def delete_target(target_id: int):
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            _ensure_targets_table(cur)
+            cur.execute("DELETE FROM dbo.PlantTargetPeriods WHERE id = ?", (target_id,))
+            conn.commit()
+        return {"status": "ok", "id": target_id}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))

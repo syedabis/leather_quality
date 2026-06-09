@@ -216,9 +216,33 @@ def daily_summary(date_param: str = Query(str(_date.today()), alias="date")):
             )
             rows = cur.fetchall()
 
-            # Daily targets
+            # Daily targets — check PlantTargetPeriods first (date-aware),
+            # fall back to flat PlantTargets for any plant not covered.
             cur.execute("SELECT unit, daily_target FROM dbo.PlantTargets")
             targets = {r[0]: int(r[1]) for r in cur.fetchall()}
+
+            # Fetch the most recent period target per unit (plant-specific beats ALL)
+            cur.execute(
+                """
+                IF OBJECT_ID('dbo.PlantTargetPeriods', 'U') IS NOT NULL
+                SELECT unit, daily_target
+                FROM (
+                    SELECT unit, daily_target,
+                           ROW_NUMBER() OVER (PARTITION BY unit ORDER BY from_date DESC, id DESC) AS rn
+                    FROM dbo.PlantTargetPeriods
+                    WHERE from_date <= ?
+                ) t WHERE rn = 1
+                """,
+                (date_param,),
+            )
+            period_rows = cur.fetchall() or []
+            period_all = None
+            period_by_unit: dict[str, int] = {}
+            for unit_p, tgt_p in period_rows:
+                if unit_p == "ALL":
+                    period_all = int(tgt_p)
+                else:
+                    period_by_unit[unit_p] = int(tgt_p)
 
         plants = []
         for row in rows:
@@ -229,7 +253,7 @@ def daily_summary(date_param: str = Query(str(_date.today()), alias="date")):
             utilization   = float(row[7] or 0)
             shift_run_hrs = round(available_hours * uptime_pct / 100, 1)
             idle_hrs      = round(idle_time_s / 3600, 1)
-            daily_target  = targets.get(unit, 1500)
+            daily_target  = period_by_unit.get(unit) or period_all or targets.get(unit, 1500)
             achievement   = round(pieces / daily_target * 100, 1) if daily_target else 0
             plants.append({
                 "unit":             unit,
