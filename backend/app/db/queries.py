@@ -530,8 +530,8 @@ def get_frame_metrics(from_date: str, to_date: str, plant: str | None = None) ->
 def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
     """
     Session timeline (lots worked) for one date, with summary totals (Total
-    Run Time, Total Idle Time, Pieces Processed, Utilisation) sourced from
-    get_frame_metrics() so they match the live Floor View.
+    Run Time, Total Idle Time, Pieces Processed, Utilisation) computed by
+    summing the rows in that same timeline, so the footer matches the table.
     """
     params: list = [report_date]
     plant_filter = ""
@@ -576,18 +576,21 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
             "party_name":   party_name,
         })
 
-    frame_metrics = get_frame_metrics(report_date, report_date, plant=plant)
-
     units = [plant] if plant else UNITS
     result_plants = []
     for plant_id in units:
         sessions = by_plant.get(plant_id, [])
         rows_out = []
+        run_s  = 0
+        idle_s = 0
+        pieces = 0
 
         for i, s in enumerate(sessions):
             dur_s = int((s["end_time"] - s["start_time"]).total_seconds())
             if dur_s < 0:
                 dur_s = 0
+            run_s  += dur_s
+            pieces += s["pieces"]
             rows_out.append({
                 "row_type":       "session",
                 "lot_no":         s["lot_no"] or "UNACCOUNTED",
@@ -604,6 +607,7 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
             if i < len(sessions) - 1:
                 gap_s = int((sessions[i + 1]["start_time"] - s["end_time"]).total_seconds())
                 if gap_s > 60:
+                    idle_s += gap_s
                     rows_out.append({
                         "row_type":       "idle",
                         "label":          "IDLE TIME",
@@ -612,20 +616,17 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
                         "duration_label": _fmt_duration(gap_s),
                     })
 
-        fm          = frame_metrics.get((report_date, plant_id), {"pieces": 0, "runtime_s": 0.0, "idle_s": 0.0})
-        run_s       = fm["runtime_s"]
-        idle_s      = fm["idle_s"]
-        observed_s  = run_s + idle_s
-        util_pct    = round(run_s / observed_s * 100, 1) if observed_s else 0
+        observed_s = run_s + idle_s
+        util_pct   = round(run_s / observed_s * 100, 1) if observed_s else 0
         result_plants.append({
             "plant": plant_id,
             "rows":  rows_out,
             "totals": {
-                "run_label":       _fmt_duration(int(run_s)),
-                "idle_label":      _fmt_duration(int(idle_s)),
+                "run_label":       _fmt_duration(run_s),
+                "idle_label":      _fmt_duration(idle_s),
                 "run_time_min":    round(run_s  / 60),
                 "idle_time_min":   round(idle_s / 60),
-                "pieces":          fm["pieces"],
+                "pieces":          pieces,
                 "utilization_pct": util_pct,
             },
         })
