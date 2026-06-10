@@ -379,7 +379,12 @@ def get_active_sessions() -> dict[str, dict | None]:
     """Returns plant → active session dict for every unit (None if no INPROCESS session)."""
     sql = """
         SELECT s.SessionId, s.LotNo, s.Plant, s.StartTime,
-               s.ExpectedPieces, s.ProcessedPieces,
+               COALESCE(s.ExpectedPieces, (
+                   SELECT TOP 1 s2.ExpectedPieces FROM dbo.AppSessions s2
+                   WHERE s2.IssueNoCounter = s.IssueNoCounter AND s2.ExpectedPieces IS NOT NULL
+                   ORDER BY s2.SessionId DESC
+               )) AS ExpectedPieces,
+               s.ProcessedPieces,
                wb.OrderNo, wb.ArticleName, wb.ColourName, wb.PartyName, wb.PK
         FROM dbo.AppSessions s
         LEFT JOIN dbo.WBIssuance_Info wb ON wb.IssueNoCounter = s.IssueNoCounter
@@ -431,7 +436,12 @@ def get_app_sessions(plant: str | None = None, limit: int = 200) -> list[dict]:
     sql = f"""
         SELECT TOP {int(limit)}
             s.SessionId, s.LotNo, s.Plant, s.StartTime, s.EndTime,
-            s.ExpectedPieces, s.ProcessedPieces, s.Status,
+            COALESCE(s.ExpectedPieces, (
+                SELECT TOP 1 s2.ExpectedPieces FROM dbo.AppSessions s2
+                WHERE s2.IssueNoCounter = s.IssueNoCounter AND s2.ExpectedPieces IS NOT NULL
+                ORDER BY s2.SessionId DESC
+            )) AS ExpectedPieces,
+            s.ProcessedPieces, s.Status,
             wb.OrderNo, wb.ArticleName, wb.ColourName, wb.PartyName, wb.PK
         FROM dbo.AppSessions s
         LEFT JOIN dbo.WBIssuance_Info wb ON wb.IssueNoCounter = s.IssueNoCounter
@@ -574,23 +584,38 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
         sessions = by_plant.get(plant_id, [])
         rows_out = []
 
+        # Unaccounted sessions (no lot assigned) are merged into a single
+        # summary row instead of one row per session — only Idle Time gaps
+        # are listed individually.
+        unacc_pieces     = 0
+        unacc_duration_s = 0
+        unacc_start      = None
+        unacc_end        = None
+
         for i, s in enumerate(sessions):
             dur_s = int((s["end_time"] - s["start_time"]).total_seconds())
             if dur_s < 0:
                 dur_s = 0
-            rows_out.append({
-                "row_type":       "session",
-                "lot_no":         s["lot_no"] or "UNACCOUNTED",
-                "order_no":       s["order_no"]     or "",
-                "party_name":     s["party_name"]   or "",
-                "article_name":   s["article_name"] or "",
-                "colour_name":    s["colour_name"]  or "",
-                "pieces":         s["pieces"],
-                "plant":          plant_id,
-                "start_time":     s["start_time"].strftime("%H:%M"),
-                "end_time":       s["end_time"].strftime("%H:%M"),
-                "duration_label": _fmt_duration(dur_s),
-            })
+            if s["lot_no"] is None:
+                unacc_pieces     += s["pieces"]
+                unacc_duration_s += dur_s
+                if unacc_start is None:
+                    unacc_start = s["start_time"]
+                unacc_end = s["end_time"]
+            else:
+                rows_out.append({
+                    "row_type":       "session",
+                    "lot_no":         s["lot_no"],
+                    "order_no":       s["order_no"]     or "N/A",
+                    "party_name":     s["party_name"]   or "N/A",
+                    "article_name":   s["article_name"] or "N/A",
+                    "colour_name":    s["colour_name"]  or "N/A",
+                    "pieces":         s["pieces"],
+                    "plant":          plant_id,
+                    "start_time":     s["start_time"].strftime("%H:%M"),
+                    "end_time":       s["end_time"].strftime("%H:%M"),
+                    "duration_label": _fmt_duration(dur_s),
+                })
             if i < len(sessions) - 1:
                 gap_s = int((sessions[i + 1]["start_time"] - s["end_time"]).total_seconds())
                 if gap_s > 60:
@@ -601,6 +626,21 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
                         "end_time":       sessions[i + 1]["start_time"].strftime("%H:%M"),
                         "duration_label": _fmt_duration(gap_s),
                     })
+
+        if unacc_start is not None:
+            rows_out.insert(0, {
+                "row_type":       "session",
+                "lot_no":         "UNACCOUNTED",
+                "order_no":       "N/A",
+                "party_name":     "N/A",
+                "article_name":   "N/A",
+                "colour_name":    "N/A",
+                "pieces":         unacc_pieces,
+                "plant":          plant_id,
+                "start_time":     unacc_start.strftime("%H:%M"),
+                "end_time":       unacc_end.strftime("%H:%M"),
+                "duration_label": _fmt_duration(unacc_duration_s),
+            })
 
         fm          = frame_metrics.get((report_date, plant_id), {"pieces": 0, "runtime_s": 0.0, "idle_s": 0.0})
         run_s       = fm["runtime_s"]

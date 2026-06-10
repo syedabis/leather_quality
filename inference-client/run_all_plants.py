@@ -341,6 +341,15 @@ def _get_unit_source(configs: dict, unit: str) -> Optional[str]:
     return str(src).strip() or None
 
 
+def _get_unit_conf(configs: dict, unit: str) -> float:
+    """Per-unit YOLO confidence threshold from unit_configs.json, falling back to CONF."""
+    val = (configs.get(unit) or {}).get("confidence")
+    try:
+        return float(val) if val is not None else CONF
+    except (TypeError, ValueError):
+        return CONF
+
+
 def _is_stream_url(source: str) -> bool:
     return source.lower().startswith(("rtsp://", "rtsps://", "http://", "https://", "udp://", "tcp://"))
 
@@ -490,6 +499,8 @@ def _plant_worker(
     db_unit  = UNIT_MAP.get(unit, unit)
     cfg_src  = _get_unit_source(unit_configs, unit)
     sources  = _resolve_sources(cfg_src) if cfg_src else sorted((VIDEOS_DIR / unit).glob("*.mp4")) if (VIDEOS_DIR / unit).is_dir() else []
+    unit_conf = _get_unit_conf(unit_configs, unit)
+    print(f"[{unit}] Confidence threshold: {unit_conf}")
 
     if not sources:
         print(f"[{unit}] No source found — worker exiting.")
@@ -560,7 +571,7 @@ def _plant_worker(
 
             # ── GPU inference (serialized across all threads) ──────────────
             with _gpu_lock:
-                results = model.predict(frame, conf=CONF, iou=0.45, device=DEVICE, verbose=False, show=False)
+                results = model.predict(frame, conf=unit_conf, iou=0.45, device=DEVICE, verbose=False, show=False)
             result     = results[0]
             boxes_xyxy = result.boxes.xyxy.cpu().numpy().tolist() if result.boxes is not None and len(result.boxes) > 0 else []
 
