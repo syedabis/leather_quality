@@ -176,9 +176,12 @@ export default function Overview() {
   useEffect(() => {
     const fetchLastHour = async () => {
       try {
-        const now = new Date();
-        const today = now.toISOString().split('T')[0];
-        const targetHour = now.getHours() > 0 ? now.getHours() - 1 : 0;
+        // Use local date/hour for "one hour ago" so the lookup stays correct
+        // across midnight (hour 0 -> hour 23 of the previous day) and doesn't
+        // mix the browser's UTC date with its local hour.
+        const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+        const today = `${oneHourAgo.getFullYear()}-${String(oneHourAgo.getMonth() + 1).padStart(2, '0')}-${String(oneHourAgo.getDate()).padStart(2, '0')}`;
+        const targetHour = oneHourAgo.getHours();
         const results = await Promise.all(
           PLANTS.map(p =>
             fetch(`${API_URL}/api/analytics/by-hour?date=${today}&unit=${p.id}`)
