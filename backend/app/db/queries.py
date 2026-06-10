@@ -477,8 +477,52 @@ def _fmt_duration(seconds: int) -> str:
     return f"{h} Hour {m} Min"
 
 
+def get_frame_metrics(from_date: str, to_date: str, plant: str | None = None) -> dict:
+    """
+    Returns {(date_str, unit): {"pieces": int, "runtime_s": float, "idle_s": float}}.
+
+    Reads dbo.CurrentHourMetrics — the SAME frame-level table the live Floor
+    View sums in get_plant_states() (hour buckets are never finalized/deleted,
+    so this also covers past dates) — so report totals match the floor view.
+    """
+    plant_filter = "AND source_note = ?" if plant else ""
+    params: list = [from_date, to_date]
+    if plant:
+        params.append(plant)
+
+    sql = f"""
+        SELECT CAST(hour_start AS DATE) AS d, source_note,
+               SUM(ISNULL(piece_count, 0))               AS pieces,
+               SUM(ISNULL(uptime_frames, 0)) * (1.0 / 5) AS runtime_s,
+               SUM(ISNULL(idle_time_s, 0))               AS idle_s
+        FROM dbo.CurrentHourMetrics
+        WHERE CAST(hour_start AS DATE) BETWEEN ? AND ?
+        {plant_filter}
+        GROUP BY CAST(hour_start AS DATE), source_note
+    """
+
+    result: dict[tuple[str, str], dict] = {}
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(sql, params)
+            for d, unit, pieces, runtime_s, idle_s in cur.fetchall():
+                result[(str(d), unit)] = {
+                    "pieces":    int(pieces or 0),
+                    "runtime_s": float(runtime_s or 0),
+                    "idle_s":    float(idle_s or 0),
+                }
+    except Exception as exc:
+        print(f"[queries] get_frame_metrics error: {exc}")
+    return result
+
+
 def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
-    """Session-level detail for one date with idle gaps filled in between sessions."""
+    """
+    Session timeline (lots worked) for one date, with summary totals (Total
+    Run Time, Total Idle Time, Pieces Processed, Utilisation) sourced from
+    get_frame_metrics() so they match the live Floor View.
+    """
     params: list = [report_date]
     plant_filter = ""
     if plant:
@@ -522,20 +566,18 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
             "party_name":   party_name,
         })
 
+    frame_metrics = get_frame_metrics(report_date, report_date, plant=plant)
+
+    units = [plant] if plant else UNITS
     result_plants = []
-    for plant_id in sorted(by_plant.keys()):
-        sessions      = by_plant[plant_id]
-        rows_out      = []
-        total_run_s   = 0
-        total_idle_s  = 0
-        total_pieces  = 0
+    for plant_id in units:
+        sessions = by_plant.get(plant_id, [])
+        rows_out = []
 
         for i, s in enumerate(sessions):
             dur_s = int((s["end_time"] - s["start_time"]).total_seconds())
             if dur_s < 0:
                 dur_s = 0
-            total_run_s  += dur_s
-            total_pieces += s["pieces"]
             rows_out.append({
                 "row_type":       "session",
                 "lot_no":         s["lot_no"] or "UNACCOUNTED",
@@ -552,7 +594,6 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
             if i < len(sessions) - 1:
                 gap_s = int((sessions[i + 1]["start_time"] - s["end_time"]).total_seconds())
                 if gap_s > 60:
-                    total_idle_s += gap_s
                     rows_out.append({
                         "row_type":       "idle",
                         "label":          "IDLE TIME",
@@ -561,17 +602,20 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
                         "duration_label": _fmt_duration(gap_s),
                     })
 
-        observed_s  = total_run_s + total_idle_s
-        util_pct    = round(total_run_s / observed_s * 100, 1) if observed_s else 0
+        fm          = frame_metrics.get((report_date, plant_id), {"pieces": 0, "runtime_s": 0.0, "idle_s": 0.0})
+        run_s       = fm["runtime_s"]
+        idle_s      = fm["idle_s"]
+        observed_s  = run_s + idle_s
+        util_pct    = round(run_s / observed_s * 100, 1) if observed_s else 0
         result_plants.append({
             "plant": plant_id,
             "rows":  rows_out,
             "totals": {
-                "run_label":       _fmt_duration(total_run_s),
-                "idle_label":      _fmt_duration(total_idle_s),
-                "run_time_min":    round(total_run_s  / 60),
-                "idle_time_min":   round(total_idle_s / 60),
-                "pieces":          total_pieces,
+                "run_label":       _fmt_duration(int(run_s)),
+                "idle_label":      _fmt_duration(int(idle_s)),
+                "run_time_min":    round(run_s  / 60),
+                "idle_time_min":   round(idle_s / 60),
+                "pieces":          fm["pieces"],
                 "utilization_pct": util_pct,
             },
         })
@@ -579,55 +623,40 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
     return {"date": report_date, "plants": result_plants}
 
 
-def get_plant_wise(from_date: str, to_date: str,
-                   plant: str | None = None,
-                   available_hours: float = 10.0) -> list[dict]:
-    """Per-day, per-plant summary over a date range."""
-    params: list = [from_date, to_date]
-    plant_filter = ""
-    if plant:
-        plant_filter = "AND s.Plant = ?"
-        params.append(plant)
-
-    sql = f"""
-        SELECT
-            CAST(s.StartTime AS DATE)                           AS report_date,
-            s.Plant,
-            ISNULL(SUM(s.ProcessedPieces), 0)                  AS total_pieces,
-            ISNULL(SUM(DATEDIFF(SECOND, s.StartTime, s.EndTime)), 0) AS run_time_s
-        FROM dbo.AppSessions s
-        WHERE s.Status = 'COMPLETED'
-          AND s.EndTime IS NOT NULL
-          AND CAST(s.StartTime AS DATE) BETWEEN ? AND ?
-          {plant_filter}
-        GROUP BY CAST(s.StartTime AS DATE), s.Plant
-        ORDER BY CAST(s.StartTime AS DATE), s.Plant
+def get_plant_wise(from_date: str, to_date: str, plant: str | None = None) -> list[dict]:
     """
+    Per-day, per-plant summary over a date range, sourced from
+    get_frame_metrics() so totals match the live Floor View.
+    """
+    from datetime import date as _date, timedelta
 
-    try:
-        with get_connection() as conn:
-            cur = conn.cursor()
-            cur.execute(sql, params)
-            raw_rows = cur.fetchall()
-    except Exception as exc:
-        print(f"[queries] get_plant_wise error: {exc}")
-        return []
+    frame_metrics = get_frame_metrics(from_date, to_date, plant=plant)
+    units = [plant] if plant else UNITS
 
-    avail_s = available_hours * 3600
-    result  = []
-    for row in raw_rows:
-        report_date, plant_id, total_pieces, run_time_s = row
-        run_time_s  = max(0, int(run_time_s  or 0))
-        idle_time_s = max(0, int(avail_s) - run_time_s)
-        util_pct    = round(run_time_s / avail_s * 100, 1) if avail_s else 0
-        result.append({
-            "date":             str(report_date),
-            "plant":            plant_id,
-            "run_time_label":   _fmt_duration(run_time_s),
-            "idle_time_label":  _fmt_duration(idle_time_s),
-            "run_time_s":       run_time_s,
-            "idle_time_s":      idle_time_s,
-            "pieces":           int(total_pieces or 0),
-            "utilization_pct":  util_pct,
-        })
+    d0 = _date.fromisoformat(from_date)
+    d1 = _date.fromisoformat(to_date)
+
+    result = []
+    d = d0
+    while d <= d1:
+        d_str = d.isoformat()
+        for unit in units:
+            fm = frame_metrics.get((d_str, unit))
+            if fm is None:
+                continue
+            run_s      = fm["runtime_s"]
+            idle_s     = fm["idle_s"]
+            observed_s = run_s + idle_s
+            util_pct   = round(run_s / observed_s * 100, 1) if observed_s else 0
+            result.append({
+                "date":             d_str,
+                "plant":            unit,
+                "run_time_label":   _fmt_duration(int(run_s)),
+                "idle_time_label":  _fmt_duration(int(idle_s)),
+                "run_time_s":       int(run_s),
+                "idle_time_s":      int(idle_s),
+                "pieces":           fm["pieces"],
+                "utilization_pct":  util_pct,
+            })
+        d += timedelta(days=1)
     return result

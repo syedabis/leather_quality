@@ -25,7 +25,7 @@ _ROOT   = Path(__file__).resolve().parents[3]   # spray-plant/
 _CLIENT = _ROOT / "client-shared"
 
 from app.db.connection import get_connection
-from app.db.queries import UNITS, PLANT_NAMES, get_daily_detail, get_plant_wise
+from app.db.queries import UNITS, PLANT_NAMES, get_daily_detail, get_plant_wise, get_frame_metrics
 
 
 def _ensure_report_deps():
@@ -210,24 +210,6 @@ def daily_summary(date_param: str = Query(str(_date.today()), alias="date")):
             available_s     = (eh * 60 + em - sh * 60 - sm) * 60
             available_hours = round(available_s / 3600, 1)
 
-            # Per-unit analytics from AppSessions (COMPLETED sessions only)
-            cur.execute(
-                """
-                SELECT
-                    Plant,
-                    ISNULL(SUM(ProcessedPieces), 0)                        AS pieces,
-                    ISNULL(SUM(DATEDIFF(SECOND, StartTime, EndTime)), 0)   AS run_s
-                FROM dbo.AppSessions
-                WHERE CAST(StartTime AS DATE) = ?
-                  AND Status = 'COMPLETED'
-                  AND EndTime IS NOT NULL
-                GROUP BY Plant
-                """,
-                (date_param,),
-            )
-            session_rows = {r[0]: {"pieces": int(r[1] or 0), "run_s": int(r[2] or 0)}
-                            for r in cur.fetchall()}
-
             # Flat targets fallback
             cur.execute("SELECT unit, daily_target FROM dbo.PlantTargets")
             flat_targets = {r[0]: int(r[1]) for r in cur.fetchall()}
@@ -256,14 +238,15 @@ def daily_summary(date_param: str = Query(str(_date.today()), alias="date")):
             except Exception:
                 pass  # table doesn't exist yet — fall back to flat_targets
 
-        from app.db.queries import UNITS
+        frame_metrics = get_frame_metrics(date_param, date_param)
         plants = []
         for unit in UNITS:
-            d             = session_rows.get(unit, {"pieces": 0, "run_s": 0})
-            pieces        = d["pieces"]
-            run_s         = d["run_s"]
-            idle_s        = max(available_s - run_s, 0)
-            utilization   = round(run_s / available_s * 100, 1) if available_s else 0.0
+            fm            = frame_metrics.get((date_param, unit), {"pieces": 0, "runtime_s": 0.0, "idle_s": 0.0})
+            pieces        = fm["pieces"]
+            run_s         = fm["runtime_s"]
+            idle_s        = fm["idle_s"]
+            observed_s    = run_s + idle_s
+            utilization   = round(run_s / observed_s * 100, 1) if observed_s else 0.0
             shift_run_hrs = round(run_s / 3600, 1)
             idle_hrs      = round(idle_s / 3600, 1)
             daily_target  = period_by_unit.get(unit) or period_all or flat_targets.get(unit, 1500)
@@ -411,7 +394,7 @@ def plant_wise_endpoint(
 ):
     try:
         _, _, avail_h = _shift_hours()
-        rows = get_plant_wise(from_date, to_date, plant=plant, available_hours=avail_h)
+        rows = get_plant_wise(from_date, to_date, plant=plant)
         return {"from": from_date, "to": to_date, "plant": plant,
                 "available_hours": avail_h, "rows": rows}
     except Exception as exc:
@@ -453,7 +436,6 @@ def download_report_excel(
 ):
     """Return an .xlsx file — type: daily_summary | daily_detail | plant_wise | all"""
     try:
-        _, _, avail_h = _shift_hours()
         wb = openpyxl.Workbook()
         wb.remove(wb.active)
 
@@ -463,7 +445,7 @@ def download_report_excel(
         if report_type in ("plant_wise", "all"):
             f = from_date or date_param
             t = to_date   or date_param
-            pw = get_plant_wise(f, t, plant=plant, available_hours=avail_h)
+            pw = get_plant_wise(f, t, plant=plant)
             ws = wb.create_sheet("Plant Wise")
             ws.append(["PLANT WISE REPORT"])
             ws.cell(1, 1).font = Font(bold=True, size=13)
