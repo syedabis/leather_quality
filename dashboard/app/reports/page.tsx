@@ -7,11 +7,20 @@ import { API_URL as API } from '../../lib/constants';
 const PLANTS = ['SP-01', 'SP-02', 'SP-03', 'SP-04', 'SP-05', 'SP-06'];
 const today  = () => new Date().toISOString().slice(0, 10);
 
+function fmtHHMMSS(totalSeconds: number): string {
+  const s = Math.max(0, Math.round(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return [h, m, sec].map(v => String(v).padStart(2, '0')).join(':');
+}
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 interface PlantRow {
   unit: string; available_hours: number; shift_run_hrs: number;
-  idle_time_hrs: number; utilization_pct: number; util_status: string;
+  idle_time_hrs: number; run_s: number; idle_s: number;
+  utilization_pct: number; util_status: string;
   pieces: number; daily_target: number; achievement_pct: number; piece_status: string;
 }
 interface SummaryData {
@@ -177,15 +186,15 @@ function DailySummaryTab() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-gray-50 dark:bg-[#1a1a1a]">
-                    <tr>{['Plant','Available Hours','Shift Run (hrs)','Idle Time (hrs)','Utilisation %','Status'].map(h => <Th key={h}>{h}</Th>)}</tr>
+                    <tr>{['Plant','Available Hours','Shift Run (hh:mm:ss)','Idle Time (hh:mm:ss)','Utilisation %','Status'].map(h => <Th key={h}>{h}</Th>)}</tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100 dark:divide-white/5">
                     {plants.map(p => (
                       <tr key={p.unit} className="hover:bg-gray-50 dark:hover:bg-[#1a1a1a] transition-colors">
                         <Td className="font-semibold text-gray-900 dark:text-white">{p.unit}</Td>
                         <Td className="text-gray-700 dark:text-gray-300">{p.available_hours}</Td>
-                        <Td className="text-gray-700 dark:text-gray-300">{p.shift_run_hrs}</Td>
-                        <Td className="text-gray-700 dark:text-gray-300">{p.idle_time_hrs}</Td>
+                        <Td className="text-gray-700 dark:text-gray-300">{fmtHHMMSS(p.run_s)}</Td>
+                        <Td className="text-gray-700 dark:text-gray-300">{fmtHHMMSS(p.idle_s)}</Td>
                         <Td className="font-semibold text-gray-900 dark:text-white">{p.utilization_pct}%</Td>
                         <Td><StatusBadge status={p.util_status} /></Td>
                       </tr>

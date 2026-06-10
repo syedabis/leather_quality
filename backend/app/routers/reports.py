@@ -256,6 +256,8 @@ def daily_summary(date_param: str = Query(str(_date.today()), alias="date")):
                 "available_hours":  available_hours,
                 "shift_run_hrs":    shift_run_hrs,
                 "idle_time_hrs":    idle_hrs,
+                "run_s":            int(run_s),
+                "idle_s":           int(idle_s),
                 "utilization_pct":  utilization,
                 "util_status":      "On Target" if utilization >= 90 else "Monitor",
                 "pieces":           pieces,
@@ -373,6 +375,11 @@ def _shift_hours() -> tuple[str, str, float]:
     sh, sm = map(int, ss.split(":"))
     eh, em = map(int, se.split(":"))
     return ss, se, round((eh * 60 + em - sh * 60 - sm) / 60, 1)
+
+
+def _fmt_duration_hms(seconds: int) -> str:
+    s = max(0, int(seconds))
+    return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
 
 
 @router.get("/daily-detail")
@@ -514,11 +521,11 @@ def download_report_excel(
             ws.append([f"Report Date: {date_param}"]); ws.append([])
             ws.append(["SECTION 1 — PLANT UTILISATION (%)"])
             ws.cell(ws.max_row, 1).font = Font(bold=True)
-            _xl_hrow(ws, ["Plant", "Available Hours", "Run Time (hrs)",
-                          "Idle Time (hrs)", "Utilisation %", "Status"])
+            _xl_hrow(ws, ["Plant", "Available Hours", "Run Time (hh:mm:ss)",
+                          "Idle Time (hh:mm:ss)", "Utilisation %", "Status"])
             for p in sd["plants"]:
-                ws.append([p["unit"], p["available_hours"], p["shift_run_hrs"],
-                           p["idle_time_hrs"], f'{p["utilization_pct"]}%',
+                ws.append([p["unit"], p["available_hours"], _fmt_duration_hms(p["run_s"]),
+                           _fmt_duration_hms(p["idle_s"]), f'{p["utilization_pct"]}%',
                            p["util_status"]])
             avg = (sum(p["utilization_pct"] for p in sd["plants"]) / len(sd["plants"])
                    if sd["plants"] else 0)
