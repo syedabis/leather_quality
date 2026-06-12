@@ -18,7 +18,8 @@ def _clerk_issuer() -> str:
     if not encoded:
         _, _, encoded = publishable_key.partition("_live_")
 
-    host = base64.b64decode(encoded).decode("utf-8").rstrip("$")
+    padded = encoded + "=" * (-len(encoded) % 4)
+    host = base64.b64decode(padded).decode("utf-8").rstrip("$")
     return f"https://{host}"
 
 
