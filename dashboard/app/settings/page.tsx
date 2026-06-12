@@ -23,7 +23,7 @@ export default function Settings() {
 
   // Admin-only mutations are sent with the Clerk session token so the
   // backend can verify the caller's role independently of the UI.
-  const authHeaders = useCallback(async () => {
+  const authHeaders = useCallback(async (): Promise<Record<string, string>> => {
     const token = await getToken();
     return token ? { Authorization: `Bearer ${token}` } : {};
   }, [getToken]);
