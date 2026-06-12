@@ -6,10 +6,15 @@ const isPublicRoute = createRouteMatcher([
   '/sign-in(.*)',
 ]);
 
+const isAdminRoute = createRouteMatcher([
+  '/monitoring(.*)',
+  '/users(.*)',
+]);
+
 export default clerkMiddleware(
   async (auth, req) => {
     try {
-      const { userId } = await auth();
+      const { userId, sessionClaims } = await auth();
 
       // Redirect authenticated users away from auth pages
       if (userId && isPublicRoute(req)) {
@@ -19,6 +24,11 @@ export default clerkMiddleware(
       // Redirect unauthenticated users away from protected pages
       if (!userId && !isPublicRoute(req)) {
         return NextResponse.redirect(new URL('/sign-in', req.url));
+      }
+
+      // Admin-only routes — non-admins bounce to /overview
+      if (userId && isAdminRoute(req) && sessionClaims?.metadata?.role !== 'admin') {
+        return NextResponse.redirect(new URL('/overview', req.url));
       }
     } catch {
       // If Clerk auth check fails (e.g. key unavailable), redirect to sign-in

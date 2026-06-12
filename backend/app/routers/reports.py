@@ -25,7 +25,7 @@ _ROOT   = Path(__file__).resolve().parents[3]   # spray-plant/
 _CLIENT = _ROOT / "client-shared"
 
 from app.db.connection import get_connection
-from app.db.queries import UNITS, PLANT_NAMES, get_daily_detail, get_plant_wise, get_frame_metrics
+from app.db.queries import UNITS, PLANT_NAMES, get_daily_detail, get_plant_wise, get_frame_metrics, _session_metrics
 
 
 def _ensure_report_deps():
@@ -238,13 +238,14 @@ def daily_summary(date_param: str = Query(str(_date.today()), alias="date")):
             except Exception:
                 pass  # table doesn't exist yet — fall back to flat_targets
 
-        frame_metrics = get_frame_metrics(date_param, date_param)
+        frame_metrics = get_frame_metrics(date_param, date_param)   # pieces only
         plants = []
         for unit in UNITS:
-            fm            = frame_metrics.get((date_param, unit), {"pieces": 0, "runtime_s": 0.0, "idle_s": 0.0})
+            fm            = frame_metrics.get((date_param, unit), {"pieces": 0})
+            sm            = _session_metrics(date_param, unit)
             pieces        = fm["pieces"]
-            run_s         = fm["runtime_s"]
-            idle_s        = fm["idle_s"]
+            run_s         = sm["run_s"]
+            idle_s        = sm["idle_s"]
             observed_s    = run_s + idle_s
             utilization   = round(run_s / observed_s * 100, 1) if observed_s else 0.0
             shift_run_hrs = round(run_s / 3600, 1)

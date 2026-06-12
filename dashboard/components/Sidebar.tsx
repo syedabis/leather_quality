@@ -4,7 +4,7 @@ import { useUser, useClerk } from '@clerk/nextjs';
 import { FaBars, FaTimes } from 'react-icons/fa';
 import {
   FiGrid, FiMap, FiVideo, FiList,
-  FiFileText, FiSettings, FiLogOut,
+  FiFileText, FiSettings, FiLogOut, FiUsers,
 } from 'react-icons/fi';
 import NavItem from './nav/NavItem';
 import type { IconType } from 'react-icons';
@@ -13,14 +13,16 @@ interface NavEntry {
   href: string;
   icon: IconType;
   label: string;
+  adminOnly?: boolean;
 }
 
 const NAV: NavEntry[] = [
   { href: '/overview',   icon: FiGrid,     label: 'Overview'    },
   { href: '/floor-view', icon: FiMap,      label: 'Floor View'  },
-  { href: '/monitoring', icon: FiVideo,    label: 'Monitoring'  },
+  { href: '/monitoring', icon: FiVideo,    label: 'Monitoring', adminOnly: true },
   { href: '/sessions',   icon: FiList,      label: 'Sessions'   },
   { href: '/reports',    icon: FiFileText,  label: 'Reports'    },
+  { href: '/users',      icon: FiUsers,     label: 'Users',     adminOnly: true },
 ];
 
 interface SidebarProps {
@@ -71,7 +73,7 @@ const Sidebar = ({ collapsed, setCollapsed }: SidebarProps) => {
 
       {/* Main nav */}
       <nav className="flex-1 flex flex-col gap-0.5">
-        {NAV.map(item => (
+        {NAV.filter(item => !item.adminOnly || role === 'admin').map(item => (
           <NavItem
             key={item.href}
             {...item}

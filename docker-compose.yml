@@ -20,6 +20,8 @@ services:
       # datetime.now() (used for break-window / holiday / off-day checks)
       # matches the inference machine and SQL Server clocks.
       TZ: ${TZ:-Asia/Karachi}
+      # Used to derive the Clerk issuer/JWKS URL for verifying session JWTs.
+      CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
     networks:
       - spray-net
     healthcheck:

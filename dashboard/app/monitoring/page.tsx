@@ -2,10 +2,12 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { FiMaximize2 } from 'react-icons/fi';
+import { useUser } from '@clerk/nextjs';
 import { StaggerContainer, StaggerItem } from '../../components/ui/AnimateIn';
 import LiveThumbnail from '../../components/LiveThumbnail';
 import BeltStatusBadge from '../../components/BeltStatusBadge';
 import CounterBadge from '../../components/CounterBadge';
+import Unauthorized from '../../components/Unauthorized';
 import { usePlantsData } from '../../hooks/usePlantsData';
 import { PLANTS } from '../../lib/constants';
 import type { PlantId } from '../../types';
@@ -15,6 +17,19 @@ export default function Monitoring() {
   const { plants, connected } = usePlantsData();
   const [fullscreen, setFullscreen] = useState<PlantId | null>(null);
   const router = useRouter();
+  const { user, isLoaded } = useUser();
+
+  if (!isLoaded) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
+        <div className="w-6 h-6 border-2 border-[#2AAA8A]/30 border-t-[#2AAA8A] rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (user?.publicMetadata?.role !== 'admin') {
+    return <Unauthorized />;
+  }
 
   return (
     <div className="p-6 text-gray-900 dark:text-white relative">

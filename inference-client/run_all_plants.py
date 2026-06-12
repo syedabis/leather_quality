@@ -515,6 +515,8 @@ def _plant_worker(
     prev_belt_active    = True
     new_idle_session    = 0
     frames_pushed       = 0
+    idle_started        = None   # time.time() when idle began (for duration calc)
+    idle_period_dt      = None   # datetime when idle began (for IdlePeriods write)
 
     src_index = 0
 
@@ -603,6 +605,9 @@ def _plant_worker(
             elif time.time() - last_detection_time > IDLE_TIMEOUT_SEC:
                 belt_active        = False
                 dynamic_frame_skip = frame_skip * 2
+                if not idle_started and _within_shift():
+                    idle_started   = time.time()
+                    idle_period_dt = datetime.now()
             else:
                 # In-ROI activity recent but nothing there this frame — hold last status.
                 dynamic_frame_skip = frame_skip
@@ -611,6 +616,22 @@ def _plant_worker(
                 new_idle_session = 1
             if not prev_belt_active and belt_active:
                 tracker.reset()
+                if idle_started is not None and idle_period_dt is not None:
+                    _dur_s = time.time() - idle_started
+                    if _dur_s > 0:
+                        try:
+                            with get_connection() as _conn:
+                                _conn.cursor().execute(
+                                    "INSERT INTO dbo.IdlePeriods "
+                                    "(idle_start, idle_end, duration_s, source_note, total_count_at_stop) "
+                                    "VALUES (?, ?, ?, ?, ?)",
+                                    (idle_period_dt, datetime.now(), round(_dur_s, 1), db_unit, total_count),
+                                )
+                                _conn.commit()
+                        except Exception as _e:
+                            print(f"[{unit}] IdlePeriods write failed: {_e}")
+                idle_started   = None
+                idle_period_dt = None
             prev_belt_active = belt_active
 
             utilization_pct = 0.0

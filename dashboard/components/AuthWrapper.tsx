@@ -1,6 +1,5 @@
 "use client";
 import { useUser } from '@clerk/nextjs';
-import Unauthorized from './Unauthorized';
 
 export default function AuthWrapper({ children }: { children: React.ReactNode }) {
   const { user, isLoaded } = useUser();
@@ -14,10 +13,6 @@ export default function AuthWrapper({ children }: { children: React.ReactNode })
   }
 
   if (!user) return null; // middleware handles redirect, this is a safety net
-
-  if (user.publicMetadata?.role !== 'admin') {
-    return <Unauthorized />;
-  }
 
   return <>{children}</>;
 }

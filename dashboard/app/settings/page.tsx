@@ -1,6 +1,6 @@
 "use client";
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { useUser } from '@clerk/nextjs';
+import { useUser, useAuth } from '@clerk/nextjs';
 import { motion } from 'framer-motion';
 import { FiCamera, FiCheck, FiAlertCircle, FiUser, FiMail, FiShield, FiSliders, FiTrash2, FiCalendar, FiPlus, FiCoffee, FiTarget } from 'react-icons/fi';
 import { API_URL } from '../../lib/constants';
@@ -19,6 +19,14 @@ function Avatar({ src, initials }: { src?: string | null; initials: string }) {
 
 export default function Settings() {
   const { user, isLoaded } = useUser();
+  const { getToken } = useAuth();
+
+  // Admin-only mutations are sent with the Clerk session token so the
+  // backend can verify the caller's role independently of the UI.
+  const authHeaders = useCallback(async () => {
+    const token = await getToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }, [getToken]);
 
   const [firstName, setFirstName] = useState(user?.firstName ?? '');
   const [lastName,  setLastName]  = useState(user?.lastName  ?? '');
@@ -99,7 +107,7 @@ export default function Settings() {
     try {
       const res = await fetch(`${API_URL}/api/settings`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
         body: JSON.stringify({
           idle_timeout_sec:       idleTimeout,
           downtime_threshold_sec: downtimeThreshold,
@@ -120,7 +128,7 @@ export default function Settings() {
       setSettingsSaving(false);
       setTimeout(() => setSettingsStatus('idle'), 3000);
     }
-  }, [idleTimeout, downtimeThreshold, shiftStart, shiftEnd, breakStartWeekday, breakEndWeekday, breakStartFriday, breakEndFriday, weeklyOffDays]);
+  }, [idleTimeout, downtimeThreshold, shiftStart, shiftEnd, breakStartWeekday, breakEndWeekday, breakStartFriday, breakEndFriday, weeklyOffDays, authHeaders]);
 
   const handleAddHoliday = useCallback(async () => {
     if (!newHolidayDate) return;
@@ -129,7 +137,7 @@ export default function Settings() {
     try {
       const res = await fetch(`${API_URL}/api/settings/holidays`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
         body: JSON.stringify({ date: newHolidayDate, description: newHolidayDesc }),
       });
       if (!res.ok) throw new Error('Failed');
@@ -144,7 +152,7 @@ export default function Settings() {
       setHolidayBusy(false);
       setTimeout(() => setHolidayStatus('idle'), 3000);
     }
-  }, [newHolidayDate, newHolidayDesc]);
+  }, [newHolidayDate, newHolidayDesc, authHeaders]);
 
   const handleAddTarget = useCallback(async () => {
     if (!newTargetDate || !newTargetValue) return;
@@ -152,7 +160,7 @@ export default function Settings() {
     try {
       const res = await fetch(`${API_URL}/api/settings/targets`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
         body: JSON.stringify({ unit: newTargetUnit, from_date: newTargetDate, daily_target: parseInt(newTargetValue) }),
       });
       if (!res.ok) throw new Error('Failed');
@@ -162,21 +170,21 @@ export default function Settings() {
       setTargetStatus('success');
     } catch { setTargetStatus('error'); }
     finally { setTargetBusy(false); setTimeout(() => setTargetStatus('idle'), 3000); }
-  }, [newTargetUnit, newTargetDate, newTargetValue]);
+  }, [newTargetUnit, newTargetDate, newTargetValue, authHeaders]);
 
   const handleDeleteTarget = useCallback(async (id: number) => {
     setTargetBusy(true);
     try {
-      await fetch(`${API_URL}/api/settings/targets/${id}`, { method: 'DELETE' });
+      await fetch(`${API_URL}/api/settings/targets/${id}`, { method: 'DELETE', headers: await authHeaders() });
       setTargets(prev => prev.filter(t => t.id !== id));
     } catch { setTargetStatus('error'); setTimeout(() => setTargetStatus('idle'), 3000); }
     finally { setTargetBusy(false); }
-  }, []);
+  }, [authHeaders]);
 
   const handleDeleteHoliday = useCallback(async (date: string) => {
     setHolidayBusy(true);
     try {
-      await fetch(`${API_URL}/api/settings/holidays/${date}`, { method: 'DELETE' });
+      await fetch(`${API_URL}/api/settings/holidays/${date}`, { method: 'DELETE', headers: await authHeaders() });
       setHolidays(prev => prev.filter(h => h.date !== date));
     } catch {
       setHolidayStatus('error');
@@ -184,13 +192,13 @@ export default function Settings() {
     } finally {
       setHolidayBusy(false);
     }
-  }, []);
+  }, [authHeaders]);
 
   const handleClearDatabase = useCallback(async () => {
     setClearing(true);
     setClearStatus('idle');
     try {
-      const res = await fetch(`${API_URL}/api/settings/clear-db`, { method: 'POST' });
+      const res = await fetch(`${API_URL}/api/settings/clear-db`, { method: 'POST', headers: await authHeaders() });
       if (!res.ok) throw new Error('Failed to clear');
       setClearStatus('success');
       setClearConfirm(false);
@@ -704,7 +712,8 @@ export default function Settings() {
           </motion.div>
         )}
 
-        {/* ── Plant Targets ───────────────────────────────────────────── */}
+        {/* ── Plant Targets (admin only) ────────────────────────────────── */}
+        {role === 'admin' && (
           <motion.div
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
@@ -814,6 +823,7 @@ export default function Settings() {
               </div>
             )}
           </motion.div>
+        )}
 
         {/* ── Database Management (admin only) ─────────────────────────── */}
         {role === 'admin' && (

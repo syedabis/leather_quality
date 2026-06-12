@@ -1,6 +1,7 @@
 from datetime import date as _date
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from app.auth import require_admin
 from app.db.connection import get_connection
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -44,7 +45,7 @@ def get_settings():
         raise HTTPException(status_code=503, detail=str(e))
 
 
-@router.put("")
+@router.put("", dependencies=[Depends(require_admin)])
 def update_settings(body: SettingsUpdate):
     updates = [
         ("idle_timeout_sec",       str(body.idle_timeout_sec)),
@@ -79,7 +80,7 @@ def update_settings(body: SettingsUpdate):
         raise HTTPException(status_code=503, detail=str(e))
 
 
-@router.post("/clear-db")
+@router.post("/clear-db", dependencies=[Depends(require_admin)])
 def clear_database():
     cleared = []
     try:
@@ -131,7 +132,7 @@ def list_holidays():
         raise HTTPException(status_code=503, detail=str(e))
 
 
-@router.post("/holidays")
+@router.post("/holidays", dependencies=[Depends(require_admin)])
 def add_holiday(body: HolidayCreate):
     # Validate YYYY-MM-DD
     try:
@@ -162,7 +163,7 @@ def add_holiday(body: HolidayCreate):
         raise HTTPException(status_code=503, detail=str(e))
 
 
-@router.delete("/holidays/{holiday_date}")
+@router.delete("/holidays/{holiday_date}", dependencies=[Depends(require_admin)])
 def delete_holiday(holiday_date: str):
     try:
         _date.fromisoformat(holiday_date)
@@ -221,7 +222,7 @@ def list_targets():
         raise HTTPException(status_code=503, detail=str(e))
 
 
-@router.post("/targets")
+@router.post("/targets", dependencies=[Depends(require_admin)])
 def add_target(body: TargetCreate):
     try:
         _date.fromisoformat(body.from_date)
@@ -246,7 +247,7 @@ def add_target(body: TargetCreate):
         raise HTTPException(status_code=503, detail=str(e))
 
 
-@router.delete("/targets/{target_id}")
+@router.delete("/targets/{target_id}", dependencies=[Depends(require_admin)])
 def delete_target(target_id: int):
     try:
         with get_connection() as conn:

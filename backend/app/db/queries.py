@@ -345,9 +345,12 @@ def get_plant_states() -> list[dict]:
         # Use current-hour uptime ratio for utilization display
         cur_total   = (cur_uptime or 0) + (cur_downtime or 0)
         avg_util    = round((cur_uptime or 0) * 100.0 / cur_total, 1) if cur_total > 0 else 0.0
-        runtime_s   = uptime_frames * (1 / 5)   # approx: frames at TARGET_FPS=5
         # Belt is active if fresh AND last written frame says belt was active
         belt_active = is_fresh and bool(cur_belt_active)
+
+        # Session-based run/idle for today — matches Daily Detail/Summary/Plant Wise.
+        today_str = datetime.now().date().isoformat()
+        sm        = _session_metrics(today_str, unit)
 
         result.append({
             "type":          "frame",
@@ -362,9 +365,9 @@ def get_plant_states() -> list[dict]:
             "session_count": idle_sessions or 0,
             "session_num":   idle_sessions or 0,
             "active_tracks": 0,
-            "utilization":   avg_util,  # keep last known value; online/belt_active flags convey staleness
-            "runtime_s":     round(runtime_s, 1),
-            "idle_s":        round(idle_time_s or 0.0, 1),
+            "utilization":   avg_util,
+            "runtime_s":     round(sm["run_s"], 1),
+            "idle_s":        round(sm["idle_s"], 1),
             "proc_fps":      0.0,
             "idle_sessions": idle_sessions or 0,
             "thumbnail":     None,
@@ -527,6 +530,133 @@ def get_frame_metrics(from_date: str, to_date: str, plant: str | None = None) ->
     return result
 
 
+def _get_shift_times() -> tuple[str, str]:
+    """Returns (shift_start, shift_end) as 'HH:MM' from SystemSettings, default ('07:00', '17:00')."""
+    times = {"shift_start": "07:00", "shift_end": "17:00"}
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT setting_key, setting_value FROM dbo.SystemSettings "
+                "WHERE setting_key IN ('shift_start','shift_end')"
+            )
+            for key, value in cur.fetchall():
+                if value:
+                    times[key] = value
+    except Exception:
+        pass
+    return times["shift_start"], times["shift_end"]
+
+
+def _session_metrics(date: str, plant: str) -> dict:
+    """
+    Returns {run_s, idle_s, pieces} for one plant+date using AppSessions +
+    IdlePeriods — the same source as get_daily_detail() so all reports agree.
+
+    run_s  = sum of all session durations for the date (not shift-clipped;
+             overtime sessions still contribute their full run time).
+    idle_s = between-session gaps + within-session idle pauses, both clipped
+             to [shift_start, shift_end] — idle outside shift is not counted.
+    pieces = sum of ProcessedPieces across all completed sessions.
+    """
+    from collections import defaultdict as _dd2
+
+    # ── Sessions ──────────────────────────────────────────────────────────────
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT s.StartTime, s.EndTime, s.ProcessedPieces "
+                "FROM dbo.AppSessions s "
+                "WHERE CAST(s.StartTime AS DATE) = ? AND s.Plant = ? "
+                "  AND s.Status = 'COMPLETED' AND s.EndTime IS NOT NULL "
+                "ORDER BY s.StartTime",
+                (date, plant),
+            )
+            sessions = [
+                {"start_time": r[0], "end_time": r[1], "pieces": int(r[2] or 0)}
+                for r in cur.fetchall()
+            ]
+    except Exception:
+        sessions = []
+
+    # ── Idle periods ──────────────────────────────────────────────────────────
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT idle_start, idle_end FROM dbo.IdlePeriods "
+                "WHERE CAST(idle_start AS DATE) = ? AND source_note = ? "
+                "ORDER BY idle_start",
+                (date, plant),
+            )
+            idle_periods = [(r[0], r[1]) for r in cur.fetchall() if r[0] and r[1]]
+    except Exception:
+        idle_periods = []
+
+    # ── Shift window ──────────────────────────────────────────────────────────
+    shift_start_str, shift_end_str = _get_shift_times()
+    sh, sm = map(int, shift_start_str.split(":"))
+    eh, em = map(int, shift_end_str.split(":"))
+    from datetime import date as _dt_date
+    report_d      = _dt_date.fromisoformat(date)
+    shift_start_dt = datetime(report_d.year, report_d.month, report_d.day, sh, sm)
+    shift_end_dt   = datetime(report_d.year, report_d.month, report_d.day, eh, em)
+    _now = datetime.now()
+    if report_d == _now.date():
+        shift_end_dt = min(shift_end_dt, _now)
+    elif report_d > _now.date():
+        return {"run_s": 0, "idle_s": 0, "pieces": 0}
+
+    _SKEW = timedelta(seconds=60)
+
+    run_s  = 0
+    idle_s = 0
+    pieces = sum(s["pieces"] for s in sessions)
+
+    # Leading idle gap (shift_start → first session)
+    if sessions and sessions[0]["start_time"] > shift_start_dt:
+        gap = int((sessions[0]["start_time"] - shift_start_dt).total_seconds())
+        if gap > 60:
+            idle_s += gap
+
+    for i, s in enumerate(sessions):
+        dur = int((s["end_time"] - s["start_time"]).total_seconds())
+        run_s += max(0, dur)
+
+        # Within-session idle pauses, clipped to shift window
+        for _ip_s, _ip_e in idle_periods:
+            if _ip_e <= s["start_time"] - _SKEW:
+                continue
+            if _ip_s >= s["end_time"] + _SKEW:
+                continue
+            _cs = max(_ip_s, s["start_time"], shift_start_dt)
+            _ce = min(_ip_e, s["end_time"],   shift_end_dt)
+            if _ce > _cs:
+                _d = int((_ce - _cs).total_seconds())
+                if _d > 0:
+                    run_s  -= _d
+                    idle_s += _d
+
+        # Between-session gap to next session
+        if i < len(sessions) - 1:
+            gap = int((sessions[i + 1]["start_time"] - s["end_time"]).total_seconds())
+            if gap > 60:
+                idle_s += gap
+
+    # Trailing idle gap (last session → shift_end)
+    if sessions and shift_end_dt > sessions[-1]["end_time"]:
+        gap = int((shift_end_dt - sessions[-1]["end_time"]).total_seconds())
+        if gap > 60:
+            idle_s += gap
+
+    # No sessions at all: entire shift is idle
+    if not sessions:
+        idle_s = max(0, int((shift_end_dt - shift_start_dt).total_seconds()))
+
+    return {"run_s": max(0, run_s), "idle_s": max(0, idle_s), "pieces": pieces}
+
+
 def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
     """
     Session timeline (lots worked) for one date, with summary totals (Total
@@ -576,6 +706,46 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
             "party_name":   party_name,
         })
 
+    shift_start_str, shift_end_str = _get_shift_times()
+    sh, sm = map(int, shift_start_str.split(":"))
+    eh, em = map(int, shift_end_str.split(":"))
+    report_d = datetime.fromisoformat(report_date).date()
+    shift_start_dt = datetime(report_d.year, report_d.month, report_d.day, sh, sm)
+    shift_end_dt   = datetime(report_d.year, report_d.month, report_d.day, eh, em)
+
+    now = datetime.now()
+    if report_d == now.date():
+        shift_end_dt = min(shift_end_dt, now)
+    elif report_d > now.date():
+        shift_end_dt = shift_start_dt
+
+    # Fetch within-session idle periods from IdlePeriods (written by inference-client).
+    # Grouped by plant so we can join against each session's window below.
+    _idle_params: list = [report_date]
+    _idle_pf = "AND source_note = ?" if plant else ""
+    if plant:
+        _idle_params.append(plant)
+    try:
+        with get_connection() as _ic:
+            _icur = _ic.cursor()
+            _icur.execute(
+                f"SELECT source_note, idle_start, idle_end FROM dbo.IdlePeriods "
+                f"WHERE CAST(idle_start AS DATE) = ? {_idle_pf} "
+                f"ORDER BY source_note, idle_start",
+                _idle_params,
+            )
+            _idle_raw = _icur.fetchall()
+    except Exception:
+        _idle_raw = []
+
+    from collections import defaultdict as _dd
+    _idle_by_plant: dict[str, list] = _dd(list)
+    for _src, _istart, _iend in _idle_raw:
+        if _istart and _iend:
+            _idle_by_plant[str(_src)].append((_istart, _iend))
+
+    _SKEW = timedelta(seconds=60)   # tolerance for accounted-session StartTime clock skew
+
     units = [plant] if plant else UNITS
     result_plants = []
     for plant_id in units:
@@ -584,6 +754,18 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
         run_s  = 0
         idle_s = 0
         pieces = 0
+
+        if sessions and sessions[0]["start_time"] > shift_start_dt:
+            gap_s = int((sessions[0]["start_time"] - shift_start_dt).total_seconds())
+            if gap_s > 60:
+                idle_s += gap_s
+                rows_out.append({
+                    "row_type":       "idle",
+                    "label":          "IDLE TIME",
+                    "start_time":     shift_start_dt.strftime("%H:%M"),
+                    "end_time":       sessions[0]["start_time"].strftime("%H:%M"),
+                    "duration_label": _fmt_duration(gap_s),
+                })
 
         for i, s in enumerate(sessions):
             dur_s = int((s["end_time"] - s["start_time"]).total_seconds())
@@ -604,6 +786,31 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
                 "end_time":       s["end_time"].strftime("%H:%M"),
                 "duration_label": _fmt_duration(dur_s),
             })
+
+            # Within-session idle periods: pauses while this lot was in progress.
+            # IdlePeriods timestamps are on the inference-PC clock; accounted sessions'
+            # StartTime may be up to ~30s off (mobile/SQL clock), so use ±60s tolerance.
+            for _ip_start, _ip_end in _idle_by_plant.get(plant_id, []):
+                if _ip_end <= s["start_time"] - _SKEW:
+                    continue   # entirely before this session
+                if _ip_start >= s["end_time"] + _SKEW:
+                    continue   # entirely after this session
+                _cs = max(_ip_start, s["start_time"], shift_start_dt)
+                _ce = min(_ip_end,   s["end_time"],   shift_end_dt)
+                if _ce <= _cs:
+                    continue
+                _ip_dur = int((_ce - _cs).total_seconds())
+                if _ip_dur > 0:
+                    run_s  -= _ip_dur
+                    idle_s += _ip_dur
+                    rows_out.append({
+                        "row_type":       "idle",
+                        "label":          "IDLE TIME",
+                        "start_time":     _cs.strftime("%H:%M"),
+                        "end_time":       _ce.strftime("%H:%M"),
+                        "duration_label": _fmt_duration(_ip_dur),
+                    })
+
             if i < len(sessions) - 1:
                 gap_s = int((sessions[i + 1]["start_time"] - s["end_time"]).total_seconds())
                 if gap_s > 60:
@@ -615,6 +822,18 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
                         "end_time":       sessions[i + 1]["start_time"].strftime("%H:%M"),
                         "duration_label": _fmt_duration(gap_s),
                     })
+
+        if sessions and shift_end_dt > sessions[-1]["end_time"]:
+            gap_s = int((shift_end_dt - sessions[-1]["end_time"]).total_seconds())
+            if gap_s > 60:
+                idle_s += gap_s
+                rows_out.append({
+                    "row_type":       "idle",
+                    "label":          "IDLE TIME",
+                    "start_time":     sessions[-1]["end_time"].strftime("%H:%M"),
+                    "end_time":       shift_end_dt.strftime("%H:%M"),
+                    "duration_label": _fmt_duration(gap_s),
+                })
 
         observed_s = run_s + idle_s
         util_pct   = round(run_s / observed_s * 100, 1) if observed_s else 0
@@ -636,12 +855,14 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
 
 def get_plant_wise(from_date: str, to_date: str, plant: str | None = None) -> list[dict]:
     """
-    Per-day, per-plant summary over a date range, sourced from
-    get_frame_metrics() so totals match the live Floor View.
+    Per-day, per-plant summary over a date range.
+    run/idle sourced from _session_metrics() (AppSessions + IdlePeriods) so
+    numbers match Daily Detail and Floor View. Pieces still from get_frame_metrics()
+    (camera-based; small accepted gap vs session-based pieces).
     """
     from datetime import date as _date, timedelta
 
-    frame_metrics = get_frame_metrics(from_date, to_date, plant=plant)
+    frame_metrics = get_frame_metrics(from_date, to_date, plant=plant)   # pieces only
     units = [plant] if plant else UNITS
 
     d0 = _date.fromisoformat(from_date)
@@ -652,11 +873,13 @@ def get_plant_wise(from_date: str, to_date: str, plant: str | None = None) -> li
     while d <= d1:
         d_str = d.isoformat()
         for unit in units:
-            fm = frame_metrics.get((d_str, unit))
-            if fm is None:
+            sm         = _session_metrics(d_str, unit)
+            run_s      = sm["run_s"]
+            idle_s     = sm["idle_s"]
+            fm         = frame_metrics.get((d_str, unit), {"pieces": 0})
+            # Skip days with no data at all
+            if run_s == 0 and idle_s == 0 and fm["pieces"] == 0:
                 continue
-            run_s      = fm["runtime_s"]
-            idle_s     = fm["idle_s"]
             observed_s = run_s + idle_s
             util_pct   = round(run_s / observed_s * 100, 1) if observed_s else 0
             result.append({
