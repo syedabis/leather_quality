@@ -69,13 +69,28 @@ WINDOW_GAP = 4
 DISPLAY_W  = 640   # overridden at startup by _calc_window_size()
 DISPLAY_H  = 360   # overridden at startup by _calc_window_size()
 
+# launch.ps1 creates this file to request a graceful stop before force-killing
+# the process (e.g. on restart or full shutdown), so active sessions get
+# closed with an accurate EndTime instead of being orphaned for the next
+# startup's cleanup to guess at.
+STOP_SIGNAL_FILE = Path(__file__).resolve().parent / ".stop_signal"
+
 
 def _get_screen_size() -> tuple[int, int]:
     """Return physical screen width/height in pixels, DPI-aware."""
     try:
         user32 = ctypes.windll.user32
         user32.SetProcessDPIAware()
-        return user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+        sw = user32.GetSystemMetrics(0)
+        sh = user32.GetSystemMetrics(1)
+        # GetSystemMetrics(0)/(1) reports the *primary* monitor, which can be
+        # misdetected (e.g. a portrait secondary display flagged primary, or a
+        # stale RDP session size) and return a value that isn't a normal
+        # landscape desktop resolution. Reject anything implausible rather
+        # than letting it stretch the grid windows into a bad aspect ratio.
+        if sw < 1024 or sh < 600 or sh >= sw:
+            return 1920, 1080
+        return sw, sh
     except Exception:
         return 1920, 1080
 
@@ -805,15 +820,21 @@ def main() -> None:
     # Per-plant frame queues (maxsize=2 keeps display lag minimal)
     frame_queues: dict[str, queue.Queue] = {u: queue.Queue(maxsize=2) for u in UNITS}
 
-    # Create and position all 6 windows before starting threads
+    # Create and position all 6 windows before starting threads.
+    # cv2.waitKey(1) after each call pumps the HighGUI message loop on Windows —
+    # without it, resizeWindow/moveWindow can be dropped for some windows when
+    # all 6 are created back-to-back, leaving them at the default size.
     for i, unit in enumerate(UNITS):
         row = i // GRID_COLS
         col = i % GRID_COLS
         x   = col * (DISPLAY_W + WINDOW_GAP)
         y   = row * (DISPLAY_H + WINDOW_GAP)
         cv2.namedWindow(unit, cv2.WINDOW_NORMAL)
+        cv2.waitKey(1)
         cv2.resizeWindow(unit, DISPLAY_W, DISPLAY_H)
+        cv2.waitKey(1)
         cv2.moveWindow(unit, x, y)
+        cv2.waitKey(1)
 
     # Start session manager (polls AppSessions + handles timers)
     session_manager.start()
@@ -830,34 +851,53 @@ def main() -> None:
         t.start()
         threads.append(t)
 
+    # Clear any stale signal left over from an unclean previous shutdown.
+    try:
+        STOP_SIGNAL_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
     print("All 6 workers started. Press ESC in any window to stop.\n")
 
-    # Main display loop — must run on main thread (Windows cv2 requirement)
-    while not stop_event.is_set():
-        for unit in UNITS:
-            try:
-                frame = frame_queues[unit].get_nowait()
-                cv2.imshow(unit, frame)
-            except queue.Empty:
-                pass
+    try:
+        # Main display loop — must run on main thread (Windows cv2 requirement)
+        while not stop_event.is_set():
+            for unit in UNITS:
+                try:
+                    frame = frame_queues[unit].get_nowait()
+                    cv2.imshow(unit, frame)
+                except queue.Empty:
+                    pass
 
-        key = cv2.waitKey(1) & 0xFF
-        if key == 27:   # ESC
-            print("\nESC pressed — stopping all plants...")
-            stop_event.set()
-            break
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27:   # ESC
+                print("\nESC pressed — stopping all plants...")
+                stop_event.set()
+                break
 
-        # Exit cleanly if all workers finished naturally (e.g. all videos done)
-        if all(not t.is_alive() for t in threads):
-            break
+            if STOP_SIGNAL_FILE.exists():
+                print("\nStop signal received — stopping all plants...")
+                stop_event.set()
+                break
 
-    stop_event.set()
-    session_manager.stop()
-    for t in threads:
-        t.join(timeout=5)
-    cv2.destroyAllWindows()
-    _push_pool.shutdown(wait=False)
-    print("\nAll done.")
+            # Exit cleanly if all workers finished naturally (e.g. all videos done)
+            if all(not t.is_alive() for t in threads):
+                break
+    finally:
+        # Always end active sessions with an accurate timestamp before exiting —
+        # covers ESC, the stop-signal file, natural worker exit, and Ctrl+C.
+        stop_event.set()
+        session_manager.end_all_active_sessions()
+        session_manager.stop()
+        for t in threads:
+            t.join(timeout=5)
+        cv2.destroyAllWindows()
+        _push_pool.shutdown(wait=False)
+        try:
+            STOP_SIGNAL_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
+        print("\nAll done.")
 
 
 if __name__ == "__main__":

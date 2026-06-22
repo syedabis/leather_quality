@@ -28,15 +28,18 @@ interface SummaryData {
   available_hours: number; plants: PlantRow[];
 }
 interface DetailRow {
-  row_type: 'session' | 'idle';
+  row_type: 'session' | 'idle' | 'break';
   lot_no?: string; order_no?: string; party_name?: string;
   article_name?: string; colour_name?: string; pieces?: number; plant?: string;
   start_time: string; end_time: string; duration_label: string; label?: string;
+  idle_within_label?: string; active_label?: string;
 }
 interface DetailPlant {
   plant: string;
+  session_start?: string;
+  session_end?: string;
   rows: DetailRow[];
-  totals: { run_label: string; idle_label: string; pieces: number; utilization_pct: number; };
+  totals: { run_label: string; idle_label: string; break_label: string; pieces: number; utilization_pct: number; };
 }
 interface DetailData  { date: string; plants: DetailPlant[]; }
 
@@ -85,7 +88,7 @@ function Th({ children }: { children: React.ReactNode }) {
 
 function Td({ children, className = '', colSpan }: { children?: React.ReactNode; className?: string; colSpan?: number }) {
   return (
-    <td colSpan={colSpan} className={`px-4 py-3 text-center text-sm ${className}`}>{children}</td>
+    <td colSpan={colSpan} className={`px-4 py-2 text-center text-sm whitespace-nowrap ${className}`}>{children}</td>
   );
 }
 
@@ -297,11 +300,18 @@ function DailyDetailTab() {
         <motion.div key={pd.plant} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: pi * 0.05 }}>
           <Card>
             <SectionHeader title={`${pd.plant} — Session Timeline`} />
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+            {pd.session_start && pd.session_end && (
+              <p className="px-6 pb-2 text-sm text-gray-500 dark:text-gray-400">
+                First session: <span className="font-medium text-gray-700 dark:text-gray-200">{pd.session_start}</span>
+                &nbsp;—&nbsp;
+                Last session ended: <span className="font-medium text-gray-700 dark:text-gray-200">{pd.session_end}</span>
+              </p>
+            )}
+            <div className="overflow-x-auto w-full">
+              <table className="min-w-max w-full text-xs">
                 <thead className="bg-gray-50 dark:bg-[#1a1a1a]">
                   <tr>
-                    {['Lot No','Order No','Party Name','Article','Colour','PCS','Plant','Start','End','Duration'].map(h=><Th key={h}>{h}</Th>)}
+                    {['Lot No','Order No','Party Name','Article','Colour','PCS','Plant','Start','End','Duration','Active Time','Session Idle'].map(h=><Th key={h}>{h}</Th>)}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-white/5">
@@ -318,6 +328,21 @@ function DailyDetailTab() {
                         <Td className="text-gray-700 dark:text-gray-300">{row.start_time}</Td>
                         <Td className="text-gray-700 dark:text-gray-300">{row.end_time}</Td>
                         <Td className="text-gray-700 dark:text-gray-300">{row.duration_label}</Td>
+                        <Td className="text-green-600 dark:text-green-400 font-medium">
+                          {row.active_label ?? '—'}
+                        </Td>
+                        <Td className="text-amber-600 dark:text-amber-400 font-medium">
+                          {row.idle_within_label ?? '—'}
+                        </Td>
+                      </tr>
+                    ) : row.row_type === 'break' ? (
+                      <tr key={ri} className="bg-purple-50 dark:bg-purple-900/10">
+                        <Td colSpan={6} className="font-semibold text-purple-700 dark:text-purple-400 text-left pl-4">{row.label}</Td>
+                        <Td className="text-purple-600 dark:text-purple-500" />
+                        <Td className="text-purple-700 dark:text-purple-400">{row.start_time}</Td>
+                        <Td className="text-purple-700 dark:text-purple-400">{row.end_time}</Td>
+                        <Td className="text-purple-700 dark:text-purple-400">{row.duration_label}</Td>
+                        <Td /><Td />
                       </tr>
                     ) : (
                       <tr key={ri} className="bg-amber-50 dark:bg-amber-900/10">
@@ -326,6 +351,7 @@ function DailyDetailTab() {
                         <Td className="text-amber-700 dark:text-amber-400">{row.start_time}</Td>
                         <Td className="text-amber-700 dark:text-amber-400">{row.end_time}</Td>
                         <Td className="text-amber-700 dark:text-amber-400">{row.duration_label}</Td>
+                        <Td /><Td />
                       </tr>
                     )
                   )}
@@ -333,10 +359,11 @@ function DailyDetailTab() {
               </table>
             </div>
             {/* Totals */}
-            <div className="bg-gray-50 dark:bg-[#1a1a1a] border-t border-gray-200 dark:border-white/10 px-6 py-3 grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+            <div className="bg-gray-50 dark:bg-[#1a1a1a] border-t border-gray-200 dark:border-white/10 px-6 py-3 grid grid-cols-2 sm:grid-cols-5 gap-4 text-sm">
               {[
                 { label: 'Total Run Time',  value: pd.totals.run_label },
                 { label: 'Total Idle Time', value: pd.totals.idle_label },
+                { label: 'Total Break Time',value: pd.totals.break_label },
                 { label: 'Pieces Processed',value: pd.totals.pieces.toLocaleString() },
                 { label: 'Utilisation',     value: `${pd.totals.utilization_pct}%` },
               ].map(({ label, value }) => (

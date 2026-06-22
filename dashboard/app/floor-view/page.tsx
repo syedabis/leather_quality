@@ -78,24 +78,24 @@ function PlantCard({ plant, dayElapsedSecs, now, delay = 0 }: PlantCardProps) {
         </span>
       </div>
 
-      {/* Belt status badge */}
+      {/* Belt status badge — Holiday/Day Off take priority over Running/Idle */}
       <div className="px-3 pb-2">
-        {isBreak && (
+        {plant.is_holiday && (
+          <span className="bg-[#3B82F6] text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full">Holiday</span>
+        )}
+        {!plant.is_holiday && plant.is_weekly_off && (
+          <span className="bg-[#6366F1] text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full">Weekly Off</span>
+        )}
+        {!plant.is_holiday && !plant.is_weekly_off && isBreak && (
           <span className="bg-[#8B5CF6] text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full">Break</span>
         )}
-        {isRunning && (
+        {!plant.is_holiday && !plant.is_weekly_off && isRunning && (
           <span className="bg-[#22C55E] text-black text-[10px] font-bold px-2.5 py-0.5 rounded-full">Running</span>
         )}
-        {isIdle && (
+        {!plant.is_holiday && !plant.is_weekly_off && isIdle && (
           <span className="bg-[#F59E0B] text-black text-[10px] font-bold px-2.5 py-0.5 rounded-full">Idle</span>
         )}
-        {!plant.online && plant.is_holiday && (
-          <span className="bg-[#3B82F6] text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full">Offline · Holiday</span>
-        )}
-        {!plant.online && !plant.is_holiday && plant.is_weekly_off && (
-          <span className="bg-[#6366F1] text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full">Offline · Day Off</span>
-        )}
-        {!plant.online && !plant.is_holiday && !plant.is_weekly_off && (
+        {!plant.is_holiday && !plant.is_weekly_off && !plant.online && (
           <span className="bg-gray-700 text-gray-300 text-[10px] font-bold px-2.5 py-0.5 rounded-full">Offline</span>
         )}
       </div>

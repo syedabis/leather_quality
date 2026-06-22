@@ -22,6 +22,8 @@ CONSECUTIVE_GAP_RESET_S     = 120   # gap (s) between pieces that resets the buf
 ACCOUNTED_GRACE_S           = 180   # TESTING: 3 min silence → end accounted session (normally 600 = 10 min)
 UNACCOUNTED_IDLE_S          = 180   # TESTING: 3 min silence → end unaccounted session (normally 900 = 15 min)
 TIMER_CHECK_INTERVAL_S      = 30    # how often to check timers
+ORPHAN_CLEANUP_RETRY_MIN_S  = 2     # backoff start when orphan-cleanup fails (e.g. DB not ready yet at startup)
+ORPHAN_CLEANUP_RETRY_MAX_S  = 30    # backoff cap
 
 
 # ── In-memory session state ────────────────────────────────────────────────
@@ -58,12 +60,31 @@ class SessionManager:
 
     def start(self) -> None:
         self._stop.clear()
-        self._close_orphaned_unaccounted_sessions()
+        # Run in the background and keep retrying — a transient DB hiccup right
+        # at startup (e.g. SQL Server/network not fully up yet after a reboot)
+        # must not let a stuck session silently survive uncleaned. This must
+        # not block startup either, so cameras/inference begin immediately.
+        threading.Thread(
+            target=self._close_orphaned_unaccounted_sessions_with_retry,
+            args=(datetime.now(),),
+            name="sm-orphan-cleanup",
+            daemon=True,
+        ).start()
         threading.Thread(target=self._poll_loop,  name="sm-poller", daemon=True).start()
         threading.Thread(target=self._timer_loop, name="sm-timer",  daemon=True).start()
         print("[SessionManager] started (poll every 5s, timers every 30s)")
 
-    def _close_orphaned_unaccounted_sessions(self) -> None:
+    def _close_orphaned_unaccounted_sessions_with_retry(self, startup_time: datetime) -> None:
+        delay = ORPHAN_CLEANUP_RETRY_MIN_S
+        while not self._stop.is_set():
+            if self._close_orphaned_unaccounted_sessions(startup_time):
+                return
+            print(f"[SessionManager] Orphan cleanup failed — retrying in {delay}s...")
+            if self._stop.wait(delay):
+                return
+            delay = min(delay * 2, ORPHAN_CLEANUP_RETRY_MAX_S)
+
+    def _close_orphaned_unaccounted_sessions(self, startup_time: datetime) -> bool:
         """
         Unaccounted sessions only exist in this process's memory — if it restarts
         (crash, redeploy, manual restart) any unaccounted session left INPROCESS
@@ -71,17 +92,35 @@ class SessionManager:
         LotNo IS NULL rows, assuming they're its own tracked sessions). Without
         this, such rows stay INPROCESS forever. We can't resume piece-counting
         for them reliably, so close them out with whatever counts they last had.
+
+        last_updated is capped at this run's own startup time so a delayed
+        retry can't mistake frames THIS run just wrote for the old session's
+        real last activity. Returns True on success (including "nothing to
+        clean"), False on a DB/connection failure so the caller can retry.
         """
         try:
             with get_connection() as conn:
                 cur = conn.cursor()
                 cur.execute(
                     """
-                    UPDATE dbo.AppSessions
-                    SET EndTime = GETDATE(), Status = 'COMPLETED'
+                    UPDATE s
+                    SET s.EndTime = CASE
+                            WHEN chm.last_seen IS NOT NULL AND chm.last_seen > s.StartTime
+                                THEN chm.last_seen
+                            ELSE s.StartTime
+                        END,
+                        s.Status = 'COMPLETED'
                     OUTPUT DELETED.SessionId, DELETED.Plant, DELETED.ProcessedPieces
-                    WHERE LotNo IS NULL AND Status = 'INPROCESS'
-                    """
+                    FROM dbo.AppSessions s
+                    OUTER APPLY (
+                        SELECT MAX(last_updated) AS last_seen
+                        FROM dbo.CurrentHourMetrics c
+                        WHERE c.source_note = s.Plant
+                          AND c.last_updated <= ?
+                    ) chm
+                    WHERE s.LotNo IS NULL AND s.Status = 'INPROCESS'
+                    """,
+                    (startup_time,),
                 )
                 rows = cur.fetchall()
                 conn.commit()
@@ -90,12 +129,29 @@ class SessionManager:
                     f"[SessionManager] Closed orphaned unaccounted session {sid} "
                     f"(plant={plant}, pieces={proc_pcs}) left INPROCESS by a previous run"
                 )
+            return True
         except Exception as exc:
-            print(f"[SessionManager] Failed to close orphaned unaccounted sessions: {exc}")
+            print(f"[SessionManager] Orphan cleanup attempt failed: {exc}")
+            return False
 
     def stop(self) -> None:
         self._stop.set()
         print("[SessionManager] stopped")
+
+    def end_all_active_sessions(self) -> None:
+        """
+        Ends every currently-tracked session (accounted + unaccounted) right now,
+        with an accurate EndTime. Call this on a graceful shutdown so sessions
+        don't get left INPROCESS for the next startup's orphan-cleanup to guess
+        at — that cleanup only knows the restart time, not the real stop time.
+        """
+        with self._lock:
+            states = [s for s in self._state.values() if s is not None]
+            self._state.clear()
+        for state in states:
+            self._do_end_session_db(state)
+        if states:
+            print(f"[SessionManager] Gracefully closed {len(states)} active session(s) on shutdown")
 
     # ── Public API ─────────────────────────────────────────────────────────
 

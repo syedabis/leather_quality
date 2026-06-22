@@ -214,20 +214,26 @@ def _is_holiday_today() -> bool:
         return False
 
 
-def _in_break_now() -> bool:
-    """True if server-clock time is inside the configured break window.
+# Cache of SystemSettings break_* values — avoids opening a fresh DB
+# connection on every call (this is called per-plant, per-request).
+_break_settings_cache: dict | None = None
+_break_settings_cached_at: datetime | None = None
+_BREAK_SETTINGS_TTL_S = 60
 
-    Reads break_start/end_weekday/friday from SystemSettings (with safe
-    fallbacks). Friday uses its own window.
-    """
-    from datetime import datetime
-    defaults = {
+
+def _get_break_settings() -> dict:
+    global _break_settings_cache, _break_settings_cached_at
+    now = datetime.now()
+    if (_break_settings_cache is not None and _break_settings_cached_at is not None
+            and (now - _break_settings_cached_at).total_seconds() < _BREAK_SETTINGS_TTL_S):
+        return _break_settings_cache
+
+    s = {
         "break_start_weekday": "13:00",
         "break_end_weekday":   "14:00",
         "break_start_friday":  "13:00",
         "break_end_friday":    "14:30",
     }
-    s = dict(defaults)
     try:
         with get_connection() as conn:
             cur = conn.cursor()
@@ -241,19 +247,126 @@ def _in_break_now() -> bool:
                     s[k] = v
     except Exception:
         pass
-    now = datetime.now()
-    if now.weekday() == 4:           # Friday
+    _break_settings_cache = s
+    _break_settings_cached_at = now
+    return s
+
+
+def _get_break_window(date_obj) -> tuple[datetime, datetime] | None:
+    """Returns (break_start_dt, break_end_dt) for the given date, Friday-aware.
+
+    Reads break_start/end_weekday/friday from SystemSettings (cached, see
+    _get_break_settings). Returns None if no valid break window is
+    configured (e.g. end <= start).
+    """
+    s = _get_break_settings()
+    if date_obj.weekday() == 4:           # Friday
         start_s, end_s = s["break_start_friday"], s["break_end_friday"]
     else:
         start_s, end_s = s["break_start_weekday"], s["break_end_weekday"]
-    def _to_min(t: str) -> int:
-        try:
-            hh, mm = t.split(":")
-            return int(hh) * 60 + int(mm)
-        except Exception:
-            return 0
-    now_min = now.hour * 60 + now.minute
-    return _to_min(start_s) <= now_min < _to_min(end_s)
+    try:
+        sh, sm = map(int, start_s.split(":"))
+        eh, em = map(int, end_s.split(":"))
+    except Exception:
+        return None
+    b_start = datetime(date_obj.year, date_obj.month, date_obj.day, sh, sm)
+    b_end   = datetime(date_obj.year, date_obj.month, date_obj.day, eh, em)
+    if b_end <= b_start:
+        return None
+    return b_start, b_end
+
+
+def _effective_break_window(date_obj, sessions: list[dict]) -> tuple[datetime, datetime] | None:
+    """Per-plant break window for a date.
+
+    If a session is still running when the configured break starts, the
+    break is delayed until that session ends. The configured break END time
+    stays fixed. Returns None if there's no break left (e.g. the session ran
+    past the configured break end).
+    """
+    window = _get_break_window(date_obj)
+    if window is None:
+        return None
+    b_start, b_end = window
+    eff_start = b_start
+    for s in sessions:
+        if s["start_time"] <= b_start < s["end_time"]:
+            eff_start = min(s["end_time"], b_end)
+            break
+    if eff_start >= b_end:
+        return None
+    return eff_start, b_end
+
+
+def _split_gap(gap_start: datetime, gap_end: datetime,
+               eff_break: tuple[datetime, datetime] | None) -> list[tuple[str, datetime, datetime]]:
+    """Split [gap_start, gap_end) into ('idle'|'break', start, end) segments,
+    carving out the portion that overlaps the effective break window."""
+    if eff_break is None or gap_end <= gap_start:
+        return [("idle", gap_start, gap_end)]
+    b_start, b_end = eff_break
+    ov_start = max(gap_start, b_start)
+    ov_end   = min(gap_end, b_end)
+    if ov_end <= ov_start:
+        return [("idle", gap_start, gap_end)]
+    segments: list[tuple[str, datetime, datetime]] = []
+    if ov_start > gap_start:
+        segments.append(("idle", gap_start, ov_start))
+    segments.append(("break", ov_start, ov_end))
+    if gap_end > ov_end:
+        segments.append(("idle", ov_end, gap_end))
+    return segments
+
+
+def _emit_gap_rows(gap_start: datetime, gap_end: datetime,
+                    eff_break: tuple[datetime, datetime] | None,
+                    rows_out: list) -> tuple[int, int]:
+    """Split a gap into idle/break segments, append timeline rows for each,
+    and return (idle_seconds_added, break_seconds_added).
+
+    Idle segments shorter than 60s are dropped (matches prior behaviour);
+    break segments are always emitted.
+    """
+    add_idle = 0
+    add_break = 0
+    for kind, seg_a, seg_b in _split_gap(gap_start, gap_end, eff_break):
+        seg = int((seg_b - seg_a).total_seconds())
+        if kind == "break":
+            if seg > 0:
+                add_break += seg
+                rows_out.append({
+                    "row_type":       "break",
+                    "label":          "BREAK TIME",
+                    "start_time":     seg_a.strftime("%H:%M"),
+                    "end_time":       seg_b.strftime("%H:%M"),
+                    "duration_label": _fmt_duration(seg),
+                })
+        else:
+            if seg > 60:
+                add_idle += seg
+                rows_out.append({
+                    "row_type":       "idle",
+                    "label":          "IDLE TIME",
+                    "start_time":     seg_a.strftime("%H:%M"),
+                    "end_time":       seg_b.strftime("%H:%M"),
+                    "duration_label": _fmt_duration(seg),
+                })
+    return add_idle, add_break
+
+
+def _get_active_session_starts() -> dict[str, datetime]:
+    """plant -> earliest StartTime among its currently-INPROCESS sessions."""
+    result: dict[str, datetime] = {}
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT Plant, StartTime FROM dbo.AppSessions WHERE Status = 'INPROCESS'")
+            for plant, start_time in cur.fetchall():
+                if start_time and (plant not in result or start_time < result[plant]):
+                    result[plant] = start_time
+    except Exception:
+        pass
+    return result
 
 
 def get_plant_states() -> list[dict]:
@@ -267,9 +380,26 @@ def get_plant_states() -> list[dict]:
     from the last seen row (so KPI tiles keep their final value but the live
     Running indicator stops blinking).
     """
-    in_break       = _in_break_now()
+    _now           = datetime.now()
+    break_window   = _get_break_window(_now.date())
+    active_starts  = _get_active_session_starts()
     is_holiday     = _is_holiday_today()
     is_weekly_off  = _is_weekly_off_today()
+
+    def _plant_in_break(unit: str) -> bool:
+        """Per-plant break flag: if THIS plant's session is still running when
+        the configured break starts, its break is delayed until that session
+        ends (configured break end time stays fixed)."""
+        if break_window is None:
+            return False
+        b_start, b_end = break_window
+        if not (b_start <= _now < b_end):
+            return False
+        st = active_starts.get(unit)
+        if st is not None and st <= b_start:
+            return False
+        return True
+
     # Sum ALL of today's hour buckets per unit so runtime/idle accumulate
     # across hour boundaries. staleness is based on the most-recent write.
     sql = """
@@ -287,18 +417,22 @@ def get_plant_states() -> list[dict]:
             DATEDIFF(SECOND, MAX(last_updated), SYSDATETIME()) AS staleness_s,
             (SELECT TOP 1 uptime_frames    FROM dbo.CurrentHourMetrics c2
              WHERE c2.source_note = c.source_note
-               AND CAST(c2.hour_start AS DATE) = CAST(GETDATE() AS DATE)
+               AND c2.hour_start >= CAST(GETDATE() AS DATE)
+               AND c2.hour_start <  DATEADD(day, 1, CAST(GETDATE() AS DATE))
              ORDER BY c2.last_updated DESC) AS cur_uptime,
             (SELECT TOP 1 downtime_frames  FROM dbo.CurrentHourMetrics c2
              WHERE c2.source_note = c.source_note
-               AND CAST(c2.hour_start AS DATE) = CAST(GETDATE() AS DATE)
+               AND c2.hour_start >= CAST(GETDATE() AS DATE)
+               AND c2.hour_start <  DATEADD(day, 1, CAST(GETDATE() AS DATE))
              ORDER BY c2.last_updated DESC) AS cur_downtime,
             (SELECT TOP 1 last_belt_active FROM dbo.CurrentHourMetrics c2
              WHERE c2.source_note = c.source_note
-               AND CAST(c2.hour_start AS DATE) = CAST(GETDATE() AS DATE)
+               AND c2.hour_start >= CAST(GETDATE() AS DATE)
+               AND c2.hour_start <  DATEADD(day, 1, CAST(GETDATE() AS DATE))
              ORDER BY c2.last_updated DESC) AS cur_belt_active
         FROM dbo.CurrentHourMetrics c
-        WHERE CAST(hour_start AS DATE) = CAST(GETDATE() AS DATE)
+        WHERE hour_start >= CAST(GETDATE() AS DATE)
+          AND hour_start <  DATEADD(day, 1, CAST(GETDATE() AS DATE))
         GROUP BY source_note
     """
 
@@ -308,6 +442,10 @@ def get_plant_states() -> list[dict]:
         rows: dict[str, tuple] = {}
         for r in cur.fetchall():
             rows[r[0]] = r
+
+    # Batch-fetch session metrics for all units in 3 queries instead of 6×3
+    today_str    = datetime.now().date().isoformat()
+    session_metrics_all = _batch_session_metrics(today_str, today_str, UNITS)
 
     result = []
     for unit in UNITS:
@@ -319,7 +457,7 @@ def get_plant_states() -> list[dict]:
                 "plant_name":    PLANT_NAMES.get(unit, unit),
                 "online":        False,
                 "belt_active":   False,
-                "in_break":      in_break,
+                "in_break":      _plant_in_break(unit),
                 "is_holiday":    is_holiday,
                 "is_weekly_off": is_weekly_off,
                 "total_count":   0,
@@ -347,10 +485,7 @@ def get_plant_states() -> list[dict]:
         avg_util    = round((cur_uptime or 0) * 100.0 / cur_total, 1) if cur_total > 0 else 0.0
         # Belt is active if fresh AND last written frame says belt was active
         belt_active = is_fresh and bool(cur_belt_active)
-
-        # Session-based run/idle for today — matches Daily Detail/Summary/Plant Wise.
-        today_str = datetime.now().date().isoformat()
-        sm        = _session_metrics(today_str, unit)
+        sm          = session_metrics_all.get((today_str, unit), {"run_s": 0.0, "idle_s": 0.0})
 
         result.append({
             "type":          "frame",
@@ -358,7 +493,7 @@ def get_plant_states() -> list[dict]:
             "plant_name":    PLANT_NAMES.get(unit, unit),
             "online":        is_fresh,
             "belt_active":   belt_active,
-            "in_break":      in_break,
+            "in_break":      _plant_in_break(unit),
             "is_holiday":    is_holiday,
             "is_weekly_off": is_weekly_off,
             "total_count":   piece_count or 0,
@@ -485,9 +620,30 @@ def get_app_sessions(plant: str | None = None, limit: int = 200) -> list[dict]:
 # ── Report helpers ─────────────────────────────────────────────────────────
 
 def _fmt_duration(seconds: int) -> str:
-    h = int(abs(seconds) // 3600)
-    m = int((abs(seconds) % 3600) // 60)
-    return f"{h} Hour {m} Min"
+    s = int(abs(seconds))
+    h = s // 3600
+    m = (s % 3600) // 60
+    sec = s % 60
+    return f"{h:02d}h {m:02d}m {sec:02d}s"
+
+
+def _merge_intervals(intervals: list[tuple]) -> list[tuple]:
+    """Merge overlapping (start_dt, end_dt) intervals so they aren't double-counted.
+
+    The inference client can write multiple idle-period records that overlap
+    (e.g. belt stops → record created, belt restarts briefly, stops again →
+    another record created, windows overlap). Without merging, summing them
+    produces idle_s > session_s.
+    """
+    if not intervals:
+        return []
+    merged = [list(sorted(intervals, key=lambda x: x[0])[0])]
+    for start, end in sorted(intervals, key=lambda x: x[0])[1:]:
+        if start <= merged[-1][1]:          # overlaps or is adjacent
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [(s, e) for s, e in merged]
 
 
 def get_frame_metrics(from_date: str, to_date: str, plant: str | None = None) -> dict:
@@ -509,7 +665,7 @@ def get_frame_metrics(from_date: str, to_date: str, plant: str | None = None) ->
                SUM(ISNULL(uptime_frames, 0)) * (1.0 / 5) AS runtime_s,
                SUM(ISNULL(idle_time_s, 0))               AS idle_s
         FROM dbo.CurrentHourMetrics
-        WHERE CAST(hour_start AS DATE) BETWEEN ? AND ?
+        WHERE hour_start >= ? AND hour_start < DATEADD(day, 1, ?)
         {plant_filter}
         GROUP BY CAST(hour_start AS DATE), source_note
     """
@@ -548,113 +704,221 @@ def _get_shift_times() -> tuple[str, str]:
     return times["shift_start"], times["shift_end"]
 
 
-def _session_metrics(date: str, plant: str) -> dict:
-    """
-    Returns {run_s, idle_s, pieces} for one plant+date using AppSessions +
-    IdlePeriods — the same source as get_daily_detail() so all reports agree.
+def _get_off_day_dates(from_date: str, to_date: str) -> set[str]:
+    """Return set of ISO date strings in [from_date, to_date] that are weekly-off or holidays.
 
-    run_s  = sum of all session durations for the date (not shift-clipped;
-             overtime sessions still contribute their full run time).
-    idle_s = between-session gaps + within-session idle pauses, both clipped
-             to [shift_start, shift_end] — idle outside shift is not counted.
-    pieces = sum of ProcessedPieces across all completed sessions.
+    Off days get zero run/idle in reports instead of 'whole shift = idle'.
     """
-    from collections import defaultdict as _dd2
+    from datetime import date as _date
+    off_dates: set[str] = set()
 
-    # ── Sessions ──────────────────────────────────────────────────────────────
+    # Weekly off days from SystemSettings (CSV of 3-letter abbrevs, e.g. "Sun" or "Sat,Sun")
+    csv_val = "Sun"
     try:
         with get_connection() as conn:
             cur = conn.cursor()
             cur.execute(
-                "SELECT s.StartTime, s.EndTime, s.ProcessedPieces "
-                "FROM dbo.AppSessions s "
-                "WHERE CAST(s.StartTime AS DATE) = ? AND s.Plant = ? "
-                "  AND s.Status = 'COMPLETED' AND s.EndTime IS NOT NULL "
-                "ORDER BY s.StartTime",
-                (date, plant),
+                "SELECT setting_value FROM dbo.SystemSettings WHERE setting_key = 'weekly_off_days'"
             )
-            sessions = [
-                {"start_time": r[0], "end_time": r[1], "pieces": int(r[2] or 0)}
-                for r in cur.fetchall()
-            ]
+            row = cur.fetchone()
+            if row and row[0]:
+                csv_val = row[0]
     except Exception:
-        sessions = []
+        pass
+    off_abbrevs = {d.strip() for d in csv_val.split(",") if d.strip()}
 
-    # ── Idle periods ──────────────────────────────────────────────────────────
+    d0 = _date.fromisoformat(from_date)
+    d1 = _date.fromisoformat(to_date)
+    _d = d0
+    while _d <= d1:
+        if _d.strftime("%a") in off_abbrevs:
+            off_dates.add(_d.isoformat())
+        _d += timedelta(days=1)
+
+    # Public holidays from dbo.Holidays
     try:
         with get_connection() as conn:
             cur = conn.cursor()
             cur.execute(
-                "SELECT idle_start, idle_end FROM dbo.IdlePeriods "
-                "WHERE CAST(idle_start AS DATE) = ? AND source_note = ? "
-                "ORDER BY idle_start",
-                (date, plant),
+                "SELECT CAST(holiday_date AS DATE) FROM dbo.Holidays "
+                "WHERE holiday_date BETWEEN ? AND ?",
+                (from_date, to_date),
             )
-            idle_periods = [(r[0], r[1]) for r in cur.fetchall() if r[0] and r[1]]
+            for (hd,) in cur.fetchall():
+                if hd:
+                    off_dates.add(str(hd))
     except Exception:
-        idle_periods = []
+        pass
 
-    # ── Shift window ──────────────────────────────────────────────────────────
-    shift_start_str, shift_end_str = _get_shift_times()
-    sh, sm = map(int, shift_start_str.split(":"))
-    eh, em = map(int, shift_end_str.split(":"))
+    return off_dates
+
+
+def _batch_session_metrics(
+    from_date: str,
+    to_date: str,
+    plants: list[str],
+) -> dict[tuple[str, str], dict]:
+    """
+    Returns {(date_str, plant): {run_s, idle_s, pieces}} for all requested
+    (date, plant) pairs using exactly 3 DB queries total — one for shift times,
+    one for all AppSessions, one for all IdlePeriods.
+
+    Replaces per-call _session_metrics() in hot loops so endpoints that query
+    multiple plants/dates don't open O(N) connections.
+    """
     from datetime import date as _dt_date
-    report_d      = _dt_date.fromisoformat(date)
-    shift_start_dt = datetime(report_d.year, report_d.month, report_d.day, sh, sm)
-    shift_end_dt   = datetime(report_d.year, report_d.month, report_d.day, eh, em)
-    _now = datetime.now()
-    if report_d == _now.date():
-        shift_end_dt = min(shift_end_dt, _now)
-    elif report_d > _now.date():
-        return {"run_s": 0, "idle_s": 0, "pieces": 0}
+    from collections import defaultdict
+
+    if not plants:
+        return {}
+
+    # ── Shift times (1 query) ────────────────────────────────────────────────
+    shift_start_str, shift_end_str = _get_shift_times()
+    sh, sm_min = map(int, shift_start_str.split(":"))
+    eh, em     = map(int, shift_end_str.split(":"))
 
     _SKEW = timedelta(seconds=60)
+    _now  = datetime.now()
+    today = _now.date()
 
-    run_s  = 0
-    idle_s = 0
-    pieces = sum(s["pieces"] for s in sessions)
+    d0    = _dt_date.fromisoformat(from_date)
+    d1    = _dt_date.fromisoformat(to_date)
+    dates: list[_dt_date] = []
+    _d    = d0
+    while _d <= d1:
+        dates.append(_d)
+        _d += timedelta(days=1)
 
-    # Leading idle gap (shift_start → first session)
-    if sessions and sessions[0]["start_time"] > shift_start_dt:
-        gap = int((sessions[0]["start_time"] - shift_start_dt).total_seconds())
-        if gap > 60:
-            idle_s += gap
+    ph = ",".join("?" * len(plants))
 
-    for i, s in enumerate(sessions):
-        dur = int((s["end_time"] - s["start_time"]).total_seconds())
-        run_s += max(0, dur)
+    # ── Batch sessions (1 query) ─────────────────────────────────────────────
+    sessions_by_key: dict[tuple[str, str], list] = defaultdict(list)
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT CAST(s.StartTime AS DATE), s.Plant, "
+                f"       s.StartTime, s.EndTime, s.ProcessedPieces "
+                f"FROM dbo.AppSessions s "
+                f"WHERE s.StartTime >= ? AND s.StartTime < DATEADD(day, 1, ?) "
+                f"  AND s.Plant IN ({ph}) "
+                f"  AND s.Status = 'COMPLETED' AND s.EndTime IS NOT NULL "
+                f"ORDER BY s.Plant, s.StartTime",
+                [from_date, to_date] + list(plants),
+            )
+            for dv, plant_id, st, et, pcs in cur.fetchall():
+                sessions_by_key[(str(dv), plant_id)].append(
+                    {"start_time": st, "end_time": et, "pieces": int(pcs or 0)}
+                )
+    except Exception:
+        pass
 
-        # Within-session idle pauses, clipped to shift window
-        for _ip_s, _ip_e in idle_periods:
-            if _ip_e <= s["start_time"] - _SKEW:
-                continue
-            if _ip_s >= s["end_time"] + _SKEW:
-                continue
-            _cs = max(_ip_s, s["start_time"], shift_start_dt)
-            _ce = min(_ip_e, s["end_time"],   shift_end_dt)
-            if _ce > _cs:
-                _d = int((_ce - _cs).total_seconds())
-                if _d > 0:
-                    run_s  -= _d
-                    idle_s += _d
+    # ── Batch idle periods (1 query) ─────────────────────────────────────────
+    idle_by_key: dict[tuple[str, str], list] = defaultdict(list)
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT CAST(idle_start AS DATE), source_note, idle_start, idle_end "
+                f"FROM dbo.IdlePeriods "
+                f"WHERE idle_start >= ? AND idle_start < DATEADD(day, 1, ?) "
+                f"  AND source_note IN ({ph}) "
+                f"ORDER BY source_note, idle_start",
+                [from_date, to_date] + list(plants),
+            )
+            for dv, src, istart, iend in cur.fetchall():
+                if istart and iend:
+                    idle_by_key[(str(dv), src)].append((istart, iend))
+    except Exception:
+        pass
 
-        # Between-session gap to next session
-        if i < len(sessions) - 1:
-            gap = int((sessions[i + 1]["start_time"] - s["end_time"]).total_seconds())
-            if gap > 60:
-                idle_s += gap
+    # ── Off-day detection (weekly off + public holidays) ─────────────────────
+    off_dates = _get_off_day_dates(from_date, to_date)
 
-    # Trailing idle gap (last session → shift_end)
-    if sessions and shift_end_dt > sessions[-1]["end_time"]:
-        gap = int((shift_end_dt - sessions[-1]["end_time"]).total_seconds())
-        if gap > 60:
-            idle_s += gap
+    # ── Compute per-(date, plant) ─────────────────────────────────────────────
+    result: dict[tuple[str, str], dict] = {}
+    for date_obj in dates:
+        d_str = date_obj.isoformat()
+        if date_obj > today or d_str in off_dates:
+            # Future dates and off days (weekly off / holidays) get zeros — no idle penalty.
+            for plant in plants:
+                result[(d_str, plant)] = {"run_s": 0, "idle_s": 0, "break_s": 0, "pieces": 0}
+            continue
 
-    # No sessions at all: entire shift is idle
-    if not sessions:
-        idle_s = max(0, int((shift_end_dt - shift_start_dt).total_seconds()))
+        shift_start_dt = datetime(date_obj.year, date_obj.month, date_obj.day, sh, sm_min)
+        shift_end_dt   = datetime(date_obj.year, date_obj.month, date_obj.day, eh, em)
+        if date_obj == today:
+            shift_end_dt = min(shift_end_dt, _now)
 
-    return {"run_s": max(0, run_s), "idle_s": max(0, idle_s), "pieces": pieces}
+        for plant in plants:
+            key          = (d_str, plant)
+            sessions     = sessions_by_key.get(key, [])
+            idle_periods = _merge_intervals(idle_by_key.get(key, []))
+            eff_break    = _effective_break_window(date_obj, sessions)
+
+            run_s   = 0
+            idle_s  = 0
+            break_s = 0
+            pieces  = sum(s["pieces"] for s in sessions)
+
+            if sessions and sessions[0]["start_time"] > shift_start_dt:
+                for kind, seg_a, seg_b in _split_gap(shift_start_dt, sessions[0]["start_time"], eff_break):
+                    seg = int((seg_b - seg_a).total_seconds())
+                    if kind == "break":
+                        break_s += seg
+                    elif seg > 60:
+                        idle_s += seg
+
+            for i, s in enumerate(sessions):
+                run_s += max(0, int((s["end_time"] - s["start_time"]).total_seconds()))
+
+                for _ip_s, _ip_e in idle_periods:
+                    if _ip_e <= s["start_time"] - _SKEW:
+                        continue
+                    if _ip_s >= s["end_time"] + _SKEW:
+                        continue
+                    _cs = max(_ip_s, s["start_time"], shift_start_dt)
+                    _ce = min(_ip_e, s["end_time"],   shift_end_dt)
+                    if _ce > _cs:
+                        _dd = int((_ce - _cs).total_seconds())
+                        if _dd > 0:
+                            run_s  -= _dd
+                            idle_s += _dd
+
+                if i < len(sessions) - 1:
+                    for kind, seg_a, seg_b in _split_gap(s["end_time"], sessions[i + 1]["start_time"], eff_break):
+                        seg = int((seg_b - seg_a).total_seconds())
+                        if kind == "break":
+                            break_s += seg
+                        elif seg > 60:
+                            idle_s += seg
+
+            if sessions and shift_end_dt > sessions[-1]["end_time"]:
+                for kind, seg_a, seg_b in _split_gap(sessions[-1]["end_time"], shift_end_dt, eff_break):
+                    seg = int((seg_b - seg_a).total_seconds())
+                    if kind == "break":
+                        break_s += seg
+                    elif seg > 60:
+                        idle_s += seg
+
+            if not sessions:
+                for kind, seg_a, seg_b in _split_gap(shift_start_dt, shift_end_dt, eff_break):
+                    seg = int((seg_b - seg_a).total_seconds())
+                    if kind == "break":
+                        break_s += seg
+                    else:
+                        idle_s += seg
+
+            result[key] = {"run_s": max(0, run_s), "idle_s": max(0, idle_s),
+                            "break_s": break_s, "pieces": pieces}
+
+    return result
+
+
+def _session_metrics(date: str, plant: str) -> dict:
+    """Single (date, plant) wrapper — use _batch_session_metrics() in loops."""
+    return _batch_session_metrics(date, date, [plant]).get((date, plant),
+                                                           {"run_s": 0, "idle_s": 0, "break_s": 0, "pieces": 0})
 
 
 def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
@@ -663,19 +927,26 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
     Run Time, Total Idle Time, Pieces Processed, Utilisation) computed by
     summing the rows in that same timeline, so the footer matches the table.
     """
-    params: list = [report_date]
+    params: list = [report_date, report_date]
     plant_filter = ""
     if plant:
         plant_filter = "AND s.Plant = ?"
         params.append(plant)
 
+    # OUTER APPLY + TOP 1 avoids fan-out duplicates when WBIssuance_Info has
+    # multiple rows for the same IssueNoCounter (LEFT JOIN would multiply rows).
     sql = f"""
         SELECT s.SessionId, s.LotNo, s.Plant, s.StartTime, s.EndTime,
                s.ExpectedPieces, s.ProcessedPieces,
                wb.OrderNo, wb.ArticleName, wb.ColourName, wb.PartyName
         FROM dbo.AppSessions s
-        LEFT JOIN dbo.WBIssuance_Info wb ON wb.IssueNoCounter = s.IssueNoCounter
-        WHERE CAST(s.StartTime AS DATE) = ?
+        OUTER APPLY (
+            SELECT TOP 1 OrderNo, ArticleName, ColourName, PartyName
+            FROM dbo.WBIssuance_Info
+            WHERE IssueNoCounter = s.IssueNoCounter
+            ORDER BY PK DESC
+        ) wb
+        WHERE s.StartTime >= ? AND s.StartTime < DATEADD(day, 1, ?)
           AND s.Status = 'COMPLETED'
           AND s.EndTime IS NOT NULL
           {plant_filter}
@@ -719,9 +990,24 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
     elif report_d > now.date():
         shift_end_dt = shift_start_dt
 
+    # For today's report, track which plants are currently in an INPROCESS session
+    # so we don't emit a trailing idle row after their last completed session.
+    _active_plants: set[str] = set()
+    if report_d == now.date():
+        try:
+            with get_connection() as _ac:
+                _acur = _ac.cursor()
+                _acur.execute(
+                    "SELECT DISTINCT Plant FROM dbo.AppSessions WHERE Status = 'INPROCESS'"
+                )
+                for (_ap,) in _acur.fetchall():
+                    _active_plants.add(str(_ap))
+        except Exception:
+            pass
+
     # Fetch within-session idle periods from IdlePeriods (written by inference-client).
     # Grouped by plant so we can join against each session's window below.
-    _idle_params: list = [report_date]
+    _idle_params: list = [report_date, report_date]
     _idle_pf = "AND source_note = ?" if plant else ""
     if plant:
         _idle_params.append(plant)
@@ -730,7 +1016,7 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
             _icur = _ic.cursor()
             _icur.execute(
                 f"SELECT source_note, idle_start, idle_end FROM dbo.IdlePeriods "
-                f"WHERE CAST(idle_start AS DATE) = ? {_idle_pf} "
+                f"WHERE idle_start >= ? AND idle_start < DATEADD(day, 1, ?) {_idle_pf} "
                 f"ORDER BY source_note, idle_start",
                 _idle_params,
             )
@@ -749,23 +1035,20 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
     units = [plant] if plant else UNITS
     result_plants = []
     for plant_id in units:
-        sessions = by_plant.get(plant_id, [])
-        rows_out = []
-        run_s  = 0
-        idle_s = 0
-        pieces = 0
+        sessions         = by_plant.get(plant_id, [])
+        eff_break        = _effective_break_window(report_d, sessions)
+        _plant_idle_ivs  = _merge_intervals(_idle_by_plant.get(plant_id, []))
+        rows_out  = []
+        run_s   = 0
+        idle_s  = 0
+        break_s = 0
+        pieces  = 0
 
         if sessions and sessions[0]["start_time"] > shift_start_dt:
-            gap_s = int((sessions[0]["start_time"] - shift_start_dt).total_seconds())
-            if gap_s > 60:
-                idle_s += gap_s
-                rows_out.append({
-                    "row_type":       "idle",
-                    "label":          "IDLE TIME",
-                    "start_time":     shift_start_dt.strftime("%H:%M"),
-                    "end_time":       sessions[0]["start_time"].strftime("%H:%M"),
-                    "duration_label": _fmt_duration(gap_s),
-                })
+            add_idle, add_break = _emit_gap_rows(
+                shift_start_dt, sessions[0]["start_time"], eff_break, rows_out)
+            idle_s  += add_idle
+            break_s += add_break
 
         for i, s in enumerate(sessions):
             dur_s = int((s["end_time"] - s["start_time"]).total_seconds())
@@ -787,64 +1070,60 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
                 "duration_label": _fmt_duration(dur_s),
             })
 
-            # Within-session idle periods: pauses while this lot was in progress.
-            # IdlePeriods timestamps are on the inference-PC clock; accounted sessions'
-            # StartTime may be up to ~30s off (mobile/SQL clock), so use ±60s tolerance.
-            for _ip_start, _ip_end in _idle_by_plant.get(plant_id, []):
+            # Within-session idle — accumulate into a field on the session row
+            # instead of adding separate idle rows to the timeline.
+            # _plant_idle_ivs is pre-merged so overlapping intervals can't
+            # push _within_idle_s above the actual session duration.
+            _within_idle_s = 0
+            for _ip_start, _ip_end in _plant_idle_ivs:
                 if _ip_end <= s["start_time"] - _SKEW:
-                    continue   # entirely before this session
+                    continue
                 if _ip_start >= s["end_time"] + _SKEW:
-                    continue   # entirely after this session
+                    continue
                 _cs = max(_ip_start, s["start_time"], shift_start_dt)
                 _ce = min(_ip_end,   s["end_time"],   shift_end_dt)
                 if _ce <= _cs:
                     continue
                 _ip_dur = int((_ce - _cs).total_seconds())
                 if _ip_dur > 0:
-                    run_s  -= _ip_dur
-                    idle_s += _ip_dur
-                    rows_out.append({
-                        "row_type":       "idle",
-                        "label":          "IDLE TIME",
-                        "start_time":     _cs.strftime("%H:%M"),
-                        "end_time":       _ce.strftime("%H:%M"),
-                        "duration_label": _fmt_duration(_ip_dur),
-                    })
+                    _within_idle_s += _ip_dur
+            _within_idle_s = min(_within_idle_s, dur_s)  # safety cap
+            _active_s = dur_s - _within_idle_s
+            run_s  -= _within_idle_s
+            idle_s += _within_idle_s
+            rows_out[-1]["active_label"] = _fmt_duration(_active_s)
+            if _within_idle_s > 1:                        # suppress sub-second noise
+                rows_out[-1]["idle_within_label"] = _fmt_duration(_within_idle_s)
 
             if i < len(sessions) - 1:
-                gap_s = int((sessions[i + 1]["start_time"] - s["end_time"]).total_seconds())
-                if gap_s > 60:
-                    idle_s += gap_s
-                    rows_out.append({
-                        "row_type":       "idle",
-                        "label":          "IDLE TIME",
-                        "start_time":     s["end_time"].strftime("%H:%M"),
-                        "end_time":       sessions[i + 1]["start_time"].strftime("%H:%M"),
-                        "duration_label": _fmt_duration(gap_s),
-                    })
+                add_idle, add_break = _emit_gap_rows(
+                    s["end_time"], sessions[i + 1]["start_time"], eff_break, rows_out)
+                idle_s  += add_idle
+                break_s += add_break
 
         if sessions and shift_end_dt > sessions[-1]["end_time"]:
-            gap_s = int((shift_end_dt - sessions[-1]["end_time"]).total_seconds())
-            if gap_s > 60:
-                idle_s += gap_s
-                rows_out.append({
-                    "row_type":       "idle",
-                    "label":          "IDLE TIME",
-                    "start_time":     sessions[-1]["end_time"].strftime("%H:%M"),
-                    "end_time":       shift_end_dt.strftime("%H:%M"),
-                    "duration_label": _fmt_duration(gap_s),
-                })
+            # Skip trailing idle when the plant is currently running a session —
+            # the gap from last completed session to now is active, not idle.
+            if plant_id not in _active_plants:
+                add_idle, add_break = _emit_gap_rows(
+                    sessions[-1]["end_time"], shift_end_dt, eff_break, rows_out)
+                idle_s  += add_idle
+                break_s += add_break
 
         observed_s = run_s + idle_s
         util_pct   = round(run_s / observed_s * 100, 1) if observed_s else 0
         result_plants.append({
-            "plant": plant_id,
+            "plant":         plant_id,
+            "session_start": sessions[0]["start_time"].strftime("%H:%M") if sessions else None,
+            "session_end":   sessions[-1]["end_time"].strftime("%H:%M")  if sessions else None,
             "rows":  rows_out,
             "totals": {
                 "run_label":       _fmt_duration(run_s),
                 "idle_label":      _fmt_duration(idle_s),
-                "run_time_min":    round(run_s  / 60),
-                "idle_time_min":   round(idle_s / 60),
+                "break_label":     _fmt_duration(break_s),
+                "run_time_min":    round(run_s   / 60),
+                "idle_time_min":   round(idle_s  / 60),
+                "break_time_min":  round(break_s / 60),
                 "pieces":          pieces,
                 "utilization_pct": util_pct,
             },
@@ -862,8 +1141,10 @@ def get_plant_wise(from_date: str, to_date: str, plant: str | None = None) -> li
     """
     from datetime import date as _date, timedelta
 
-    frame_metrics = get_frame_metrics(from_date, to_date, plant=plant)   # pieces only
-    units = [plant] if plant else UNITS
+    frame_metrics   = get_frame_metrics(from_date, to_date, plant=plant)   # pieces only
+    units           = [plant] if plant else UNITS
+    session_metrics = _batch_session_metrics(from_date, to_date, units)
+    off_dates       = _get_off_day_dates(from_date, to_date)
 
     d0 = _date.fromisoformat(from_date)
     d1 = _date.fromisoformat(to_date)
@@ -872,8 +1153,12 @@ def get_plant_wise(from_date: str, to_date: str, plant: str | None = None) -> li
     d = d0
     while d <= d1:
         d_str = d.isoformat()
+        # Skip off days entirely — no row in plant-wise for weekly-off / holidays
+        if d_str in off_dates:
+            d += timedelta(days=1)
+            continue
         for unit in units:
-            sm         = _session_metrics(d_str, unit)
+            sm         = session_metrics.get((d_str, unit), {"run_s": 0, "idle_s": 0})
             run_s      = sm["run_s"]
             idle_s     = sm["idle_s"]
             fm         = frame_metrics.get((d_str, unit), {"pieces": 0})

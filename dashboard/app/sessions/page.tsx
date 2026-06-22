@@ -37,9 +37,8 @@ function fmtDuration(startIso: string | null, endIso: string | null): string {
   const s     = Math.max(0, Math.floor((end - start) / 1000));
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
-  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`;
-  if (m > 0) return `${m}m ${String(s % 60).padStart(2, '0')}s`;
-  return `${s}s`;
+  const sec = s % 60;
+  return `${String(h).padStart(2, '0')}h ${String(m).padStart(2, '0')}m ${String(sec).padStart(2, '0')}s`;
 }
 
 export default function Sessions() {
@@ -79,7 +78,7 @@ export default function Sessions() {
   return (
     <div className="p-6 text-gray-900 dark:text-white relative">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-wrap items-start justify-between gap-4 mb-6">
         <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
           <h1 className="text-2xl font-bold font-[family-name:var(--font-inter-tight)] tracking-tight text-gray-900 dark:text-white">
             Sessions
@@ -89,7 +88,7 @@ export default function Sessions() {
           </p>
         </motion.div>
 
-        <div className="flex items-center gap-2 flex-wrap justify-end">
+        <div className="flex items-center gap-2 flex-wrap">
           {/* Search */}
           <div className="flex items-center gap-1.5 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-xl px-3 py-2 shadow-sm">
             <FiSearch className="text-gray-400 w-3.5 h-3.5 shrink-0" />
@@ -139,10 +138,10 @@ export default function Sessions() {
         className="glass-card overflow-hidden"
       >
         <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-200px)] custom-scrollbar">
-          <table className="w-full min-w-[1000px]">
+          <table className="w-full min-w-[1200px]">
             <thead className="sticky top-0 z-10">
               <tr className="bg-gray-50 dark:bg-[#111111] border-b border-gray-200 dark:border-[#2c2c2c]">
-                {['Plant', 'Type', 'LOT', 'Party', 'Order', 'Color', 'Article', 'Expected', 'Processed', 'Duration', 'Start', 'Status'].map(h => (
+                {['Plant', 'Type', 'LOT', 'Party', 'Order', 'Color', 'Article', 'Expected', 'Processed', 'Duration', 'Start', 'End', 'Status'].map(h => (
                   <th key={h} className="px-4 py-3.5 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">
                     {h}
                   </th>
@@ -153,13 +152,13 @@ export default function Sessions() {
               <AnimatePresence initial={false}>
                 {loading ? (
                   <tr>
-                    <td colSpan={12} className="px-4 py-12 text-center text-sm text-gray-400">
+                    <td colSpan={13} className="px-4 py-12 text-center text-sm text-gray-400">
                       Loading sessions…
                     </td>
                   </tr>
                 ) : filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={12} className="px-4 py-12 text-center text-sm text-gray-400">
+                    <td colSpan={13} className="px-4 py-12 text-center text-sm text-gray-400">
                       No sessions found
                     </td>
                   </tr>
@@ -244,6 +243,13 @@ export default function Sessions() {
                     <td className="px-4 py-3.5">
                       <span className="text-xs text-gray-500 tabular-nums whitespace-nowrap">
                         {fmtDatetime(row.start_time)}
+                      </span>
+                    </td>
+
+                    {/* End */}
+                    <td className="px-4 py-3.5">
+                      <span className="text-xs text-gray-500 tabular-nums whitespace-nowrap">
+                        {row.end_time ? fmtDatetime(row.end_time) : <span className="text-[#2AAA8A] italic">Active</span>}
                       </span>
                     </td>
 

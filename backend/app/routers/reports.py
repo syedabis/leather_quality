@@ -25,7 +25,7 @@ _ROOT   = Path(__file__).resolve().parents[3]   # spray-plant/
 _CLIENT = _ROOT / "client-shared"
 
 from app.db.connection import get_connection
-from app.db.queries import UNITS, PLANT_NAMES, get_daily_detail, get_plant_wise, get_frame_metrics, _session_metrics
+from app.db.queries import UNITS, PLANT_NAMES, get_daily_detail, get_plant_wise, get_frame_metrics, _session_metrics, _batch_session_metrics
 
 
 def _ensure_report_deps():
@@ -238,11 +238,12 @@ def daily_summary(date_param: str = Query(str(_date.today()), alias="date")):
             except Exception:
                 pass  # table doesn't exist yet — fall back to flat_targets
 
-        frame_metrics = get_frame_metrics(date_param, date_param)   # pieces only
+        frame_metrics   = get_frame_metrics(date_param, date_param)   # pieces only
+        session_metrics = _batch_session_metrics(date_param, date_param, UNITS)
         plants = []
         for unit in UNITS:
             fm            = frame_metrics.get((date_param, unit), {"pieces": 0})
-            sm            = _session_metrics(date_param, unit)
+            sm            = session_metrics.get((date_param, unit), {"run_s": 0, "idle_s": 0})
             pieces        = fm["pieces"]
             run_s         = sm["run_s"]
             idle_s        = sm["idle_s"]
@@ -447,7 +448,8 @@ def download_report_excel(
         wb = openpyxl.Workbook()
         wb.remove(wb.active)
 
-        idle_fill = PatternFill("solid", fgColor="FFF3CD")
+        idle_fill  = PatternFill("solid", fgColor="FFF3CD")
+        break_fill = PatternFill("solid", fgColor="E4DEFC")
 
         # ── Sheet: Plant Wise ──────────────────────────────────────────────
         if report_type in ("plant_wise", "all"):
@@ -477,7 +479,8 @@ def download_report_excel(
             ws.append(["Plant", plant or "All Plants"]); ws.append([])
             cols = ["Process Date", "Lot No", "Order No", "Party Name",
                     "Article Name", "Colour Name", "PCS", "Plant",
-                    "Process Start", "Process End", "Duration"]
+                    "Process Start", "Process End", "Duration",
+                    "Active Time", "Session Idle"]
             for pd in detail.get("plants", []):
                 _xl_hrow(ws, [f"Plant: {pd['plant']}"] + [""] * (len(cols) - 1))
                 _xl_hrow(ws, cols)
@@ -486,27 +489,39 @@ def download_report_excel(
                         ws.append([
                             date_param,
                             row["lot_no"],
-                            row.get("order_no",    ""),
-                            row.get("party_name",  ""),
-                            row.get("article_name",""),
-                            row.get("colour_name", ""),
-                            row.get("pieces",      0),
+                            row.get("order_no",         ""),
+                            row.get("party_name",       ""),
+                            row.get("article_name",     ""),
+                            row.get("colour_name",      ""),
+                            row.get("pieces",           0),
                             pd["plant"],
                             row["start_time"],
                             row["end_time"],
                             row["duration_label"],
+                            row.get("active_label",     ""),
+                            row.get("idle_within_label",""),
                         ])
+                    elif row["row_type"] == "break":
+                        ri = ws.max_row + 1
+                        ws.append([None, None, None, "BREAK TIME", None, None,
+                                   None, None, row["start_time"],
+                                   row["end_time"], row["duration_label"],
+                                   None, None])
+                        for col in range(1, len(cols) + 1):
+                            ws.cell(ri, col).fill = break_fill
                     else:
                         ri = ws.max_row + 1
                         ws.append([None, None, None, "IDLE TIME", None, None,
                                    None, None, row["start_time"],
-                                   row["end_time"], row["duration_label"]])
+                                   row["end_time"], row["duration_label"],
+                                   None, None])
                         for col in range(1, len(cols) + 1):
                             ws.cell(ri, col).fill = idle_fill
                 t2 = pd["totals"]
                 ws.append([])
                 for lbl, val in [("Total Run Time",   t2["run_label"]),
                                   ("Total Idle Time",  t2["idle_label"]),
+                                  ("Total Break Time", t2["break_label"]),
                                   ("Pieces Processed", t2["pieces"]),
                                   ("Utilisation",      f'{t2["utilization_pct"]}%')]:
                     ws.append([None, None, None, None, None, None, lbl, None, val])

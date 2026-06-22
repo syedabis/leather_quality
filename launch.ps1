@@ -1,11 +1,12 @@
 # CONFIGURATION
-$DEPLOY_DIR       = $PSScriptRoot
-$INFERENCE_DIR    = Join-Path $DEPLOY_DIR "inference-client"
-$INFERENCE_SCRIPT = "run_all_plants.py"
-$DASHBOARD_URL    = "http://localhost:3000"
-$DOCKER_EXE       = "C:\Program Files\Docker\Docker\Docker Desktop.exe"
+$DEPLOY_DIR         = $PSScriptRoot
+$INFERENCE_DIR      = Join-Path $DEPLOY_DIR "inference-client"
+$INFERENCE_SCRIPT   = "run_all_plants.py"
+$DASHBOARD_URL      = "http://localhost:3000"
+$DOCKER_EXE         = "C:\Program Files\Docker\Docker\Docker Desktop.exe"
+$MOBILE_BACKEND_DIR = "D:\Plant Installtion\deployement\backend-mobile"
 
-# Detect LAN IP — pick the adapter that has a default gateway (i.e. the active one)
+# Detect LAN IP - pick the adapter that has a default gateway (i.e. the active one)
 $lanIP = (Get-NetIPConfiguration |
     Where-Object { $_.IPv4DefaultGateway -ne $null -and $_.NetAdapter.Status -eq "Up" } |
     Select-Object -First 1).IPv4Address.IPAddress
@@ -23,6 +24,14 @@ function Stop-All {
     Write-Host ""
     Write-Host "  Stopping system..." -ForegroundColor Yellow
     if ($inferenceProc -and -not $inferenceProc.HasExited) {
+        # Ask the inference script to end active sessions and exit gracefully
+        # before force-killing it, so sessions aren't left orphaned mid-run
+        # (the next startup's cleanup only knows the restart time, not the
+        # real stop time).
+        $stopSignalFile = Join-Path $INFERENCE_DIR ".stop_signal"
+        New-Item -ItemType File -Path $stopSignalFile -Force -ErrorAction SilentlyContinue | Out-Null
+        Start-Sleep 5
+        Remove-Item $stopSignalFile -Force -ErrorAction SilentlyContinue
         Get-WmiObject Win32_Process |
             Where-Object { $_.ParentProcessId -eq $inferenceProc.Id } |
             ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
@@ -30,6 +39,8 @@ function Stop-All {
     }
     Set-Location $DEPLOY_DIR
     docker compose down --timeout 15 2>&1 | Out-Null
+    # Stop mobile backend
+    pm2 stop leatherflow 2>&1 | Out-Null
     Write-Host "  System stopped. Goodbye." -ForegroundColor Green
     Start-Sleep 2
 }
@@ -98,7 +109,18 @@ Write-Host "  Starting containers..." -ForegroundColor Cyan
 docker compose up -d 2>&1 | Out-Null
 Write-Host "  Containers started." -ForegroundColor Green
 
-# 4. Wait for dashboard
+# 4b. Start mobile app backend (LeatherFlow API on port 3008)
+Write-Host "  Starting mobile app backend..." -ForegroundColor Cyan
+$mobileBackendScript = Join-Path $MOBILE_BACKEND_DIR "index.js"
+if (Test-Path $mobileBackendScript) {
+    pm2 delete leatherflow 2>&1 | Out-Null
+    pm2 start $mobileBackendScript --name leatherflow --cwd $MOBILE_BACKEND_DIR 2>&1 | Out-Null
+    Write-Host "  Mobile backend running on port 3008 (via PM2)." -ForegroundColor Green
+} else {
+    Write-Host "  Mobile backend not found at $MOBILE_BACKEND_DIR - skipping." -ForegroundColor Yellow
+}
+
+# 5. Wait for dashboard
 Write-Host "  Waiting for dashboard" -NoNewline -ForegroundColor Cyan
 $elapsed = 0
 while ($elapsed -lt 90) {
@@ -112,13 +134,31 @@ while ($elapsed -lt 90) {
 }
 Write-Host ""
 
-# 5. Open browser
+# 6. Open browser
 Start-Process $DASHBOARD_URL
 Write-Host "  Browser opened." -ForegroundColor Green
 
-# 6. Start inference
+# 7. Start inference - kill any existing instance first so only one ever runs
 $inferenceScript = Join-Path $INFERENCE_DIR $INFERENCE_SCRIPT
 if (Test-Path $inferenceScript) {
+    $existing = Get-WmiObject Win32_Process -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandLine -like "*run_all_plants.py*" }
+    if ($existing) {
+        Write-Host "  Found existing inference (PID $($existing.ProcessId)) - stopping it..." -ForegroundColor Yellow
+        # Ask it to end active sessions and exit gracefully first, so sessions
+        # aren't left orphaned for the next startup's cleanup to guess at.
+        $stopSignalFile = Join-Path $INFERENCE_DIR ".stop_signal"
+        New-Item -ItemType File -Path $stopSignalFile -Force -ErrorAction SilentlyContinue | Out-Null
+        Start-Sleep 5
+        Remove-Item $stopSignalFile -Force -ErrorAction SilentlyContinue
+        # Kill child processes of that CMD window first, then the CMD itself
+        Get-WmiObject Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.ParentProcessId -eq $existing.ProcessId } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        Stop-Process -Id $existing.ProcessId -Force -ErrorAction SilentlyContinue
+        Start-Sleep 2
+        Write-Host "  Old inference stopped." -ForegroundColor Green
+    }
     Write-Host "  Starting inference on all plants..." -ForegroundColor Cyan
     $inferenceProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/k python $INFERENCE_SCRIPT" -WorkingDirectory $INFERENCE_DIR -PassThru
     Write-Host "  Inference running (PID $($inferenceProc.Id))." -ForegroundColor Green
@@ -126,7 +166,7 @@ if (Test-Path $inferenceScript) {
     Write-Host "  Inference script not found - skipping." -ForegroundColor Yellow
 }
 
-# 7. Running banner
+# 8. Running banner
 Write-Host ""
 Write-Host "  ================================================" -ForegroundColor Green
 Write-Host "     SYSTEM IS RUNNING                           " -ForegroundColor Green

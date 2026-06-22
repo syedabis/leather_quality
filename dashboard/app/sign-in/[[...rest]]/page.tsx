@@ -7,7 +7,6 @@ import { Eye, EyeOff } from 'lucide-react';
 export default function SignIn() {
   const { isSignedIn, isLoaded } = useAuth();
 
-  // Redirect to /overview if already signed in
   useEffect(() => {
     if (isLoaded && isSignedIn) {
       window.location.href = '/overview';
@@ -23,6 +22,12 @@ export default function SignIn() {
   const [showPw,     setShowPw]     = useState(false);
   const [submitErr,  setSubmitErr]  = useState<string | null>(null);
   const [isFetching, setIsFetching] = useState(false);
+
+  // Second-factor (email code) state
+  const [needsCode,    setNeedsCode]    = useState(false);
+  const [code,         setCode]         = useState('');
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [signInResult, setSignInResult] = useState<any>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -50,7 +55,10 @@ export default function SignIn() {
         await setActive({ session: sessionId });
         window.location.href = '/overview';
       } else if (status === 'needs_second_factor') {
-        setSubmitErr('Two-factor authentication is required. Please disable MFA in Clerk dashboard.');
+        // result has the live SignIn resource — prepareSecondFactor lives on it
+        try { await result.prepareSecondFactor({ strategy: 'email_code' }); } catch (_) { /* auto-sent */ }
+        setSignInResult(result);
+        setNeedsCode(true);
       } else {
         setSubmitErr(`Sign-in failed (status: ${status}). Check credentials and try again.`);
       }
@@ -58,6 +66,33 @@ export default function SignIn() {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const clerkErr = (err as any)?.errors?.[0];
       setSubmitErr(clerkErr?.longMessage || clerkErr?.message || (err as Error).message || 'Sign-in failed. Please try again.');
+    } finally {
+      setIsFetching(false);
+    }
+  };
+
+  const handleCodeSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!signIn) return;
+    setSubmitErr(null);
+    setIsFetching(true);
+
+    try {
+      const attempt   = signInResult || signIn;
+      const result    = await attempt.attemptSecondFactor({ strategy: 'email_code', code: code.trim() });
+      const status    = result?.status    ?? attempt.status;
+      const sessionId = result?.createdSessionId ?? attempt.createdSessionId;
+
+      if (status === 'complete') {
+        await setActive({ session: sessionId });
+        window.location.href = '/overview';
+      } else {
+        setSubmitErr('Verification failed. Please check the code and try again.');
+      }
+    } catch (err: unknown) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const clerkErr = (err as any)?.errors?.[0];
+      setSubmitErr(clerkErr?.longMessage || clerkErr?.message || (err as Error).message || 'Verification failed.');
     } finally {
       setIsFetching(false);
     }
@@ -97,9 +132,13 @@ export default function SignIn() {
 
         {/* Welcome text */}
         <div className="text-center w-full mb-6">
-          <h1 className="text-3xl font-extrabold text-gray-900 mb-2 leading-tight">Welcome back</h1>
+          <h1 className="text-3xl font-extrabold text-gray-900 mb-2 leading-tight">
+            {needsCode ? 'Check your email' : 'Welcome back'}
+          </h1>
           <p className="text-gray-500 text-xs md:text-sm leading-relaxed max-w-md mx-auto">
-            Log in to access your Spray Plant Operations dashboard and stay updated with real-time data and performance metrics.
+            {needsCode
+              ? `A verification code has been sent to ${identifier}. Enter it below to complete sign-in.`
+              : 'Log in to access your Spray Plant Operations dashboard and stay updated with real-time data and performance metrics.'}
           </p>
         </div>
 
@@ -111,46 +150,75 @@ export default function SignIn() {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} noValidate className="space-y-4">
-          <input
-            type="text"
-            placeholder="Email"
-            value={identifier}
-            onChange={e => setIdentifier(e.target.value)}
-            className="w-full h-11 bg-gray-50 border border-gray-200 focus:bg-white focus:border-gray-400
-              rounded-lg px-4 text-gray-900 text-sm placeholder-gray-400
-              focus:outline-none focus:ring-0 transition-colors"
-            autoComplete="username"
-            required
-          />
-
-          <div className="relative">
+        {!needsCode ? (
+          <form onSubmit={handleSubmit} noValidate className="space-y-4">
             <input
-              type={showPw ? 'text' : 'password'}
-              placeholder="Password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
+              type="text"
+              placeholder="Email"
+              value={identifier}
+              onChange={e => setIdentifier(e.target.value)}
               className="w-full h-11 bg-gray-50 border border-gray-200 focus:bg-white focus:border-gray-400
-                rounded-lg px-4 pr-10 text-gray-900 text-sm placeholder-gray-400
+                rounded-lg px-4 text-gray-900 text-sm placeholder-gray-400
                 focus:outline-none focus:ring-0 transition-colors"
-              autoComplete="current-password"
+              autoComplete="username"
               required
             />
+
+            <div className="relative">
+              <input
+                type={showPw ? 'text' : 'password'}
+                placeholder="Password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                className="w-full h-11 bg-gray-50 border border-gray-200 focus:bg-white focus:border-gray-400
+                  rounded-lg px-4 pr-10 text-gray-900 text-sm placeholder-gray-400
+                  focus:outline-none focus:ring-0 transition-colors"
+                autoComplete="current-password"
+                required
+              />
+              <button
+                type="button"
+                onClick={() => setShowPw(v => !v)}
+                tabIndex={-1}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+
+            <TextureButton disabled={isFetching}>
+              {isFetching ? 'Signing in…' : 'Sign In'}
+            </TextureButton>
+          </form>
+        ) : (
+          <form onSubmit={handleCodeSubmit} noValidate className="space-y-4">
+            <input
+              type="text"
+              placeholder="6-digit verification code"
+              value={code}
+              onChange={e => setCode(e.target.value)}
+              className="w-full h-11 bg-gray-50 border border-gray-200 focus:bg-white focus:border-gray-400
+                rounded-lg px-4 text-gray-900 text-sm placeholder-gray-400 text-center tracking-widest
+                focus:outline-none focus:ring-0 transition-colors"
+              autoComplete="one-time-code"
+              maxLength={6}
+              required
+              autoFocus
+            />
+
+            <TextureButton disabled={isFetching}>
+              {isFetching ? 'Verifying…' : 'Verify'}
+            </TextureButton>
+
             <button
               type="button"
-              onClick={() => setShowPw(v => !v)}
-              tabIndex={-1}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
+              onClick={() => { setNeedsCode(false); setCode(''); setSubmitErr(null); }}
+              className="w-full text-sm text-gray-500 hover:text-gray-700 transition-colors"
             >
-              {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              ← Back to sign in
             </button>
-          </div>
-
-          <TextureButton disabled={isFetching}>
-            {isFetching ? 'Signing in…' : 'Sign In'}
-          </TextureButton>
-
-        </form>
+          </form>
+        )}
       </div>
     </div>
   );
