@@ -211,6 +211,68 @@ class SessionManager:
                 daemon=True,
             ).start()
 
+    def start_burst_unaccounted(
+        self, plant: str, start_time: datetime, piece_count: int
+    ) -> None:
+        """
+        Immediately open an UNACCOUNTED session starting at start_time with piece_count
+        pieces already credited.  Called when WASHING/COLOR_MATCHING ends via a piece
+        burst — those burst pieces belong to the new session, not the mode session.
+        """
+        with self._lock:
+            self._consec_buffer.pop(plant, None)
+            if self._state.get(plant) is not None:
+                return   # another session somehow already open — skip
+            self._state[plant] = PlantSessionState(
+                session_id      = -1,
+                plant           = plant,
+                session_type    = 'unaccounted',
+                start_time      = start_time,
+                lot_no          = None,
+                expected_pieces = None,
+                current_count   = piece_count,
+                last_piece_time = start_time,
+            )
+        threading.Thread(
+            target=self._create_burst_unaccounted_db,
+            args=(plant, start_time, piece_count),
+            daemon=True,
+        ).start()
+
+    def _create_burst_unaccounted_db(
+        self, plant: str, start_time: datetime, piece_count: int
+    ) -> None:
+        """INSERT burst-triggered UNACCOUNTED session with initial piece count."""
+        try:
+            with get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO dbo.AppSessions (Plant, StartTime, Status, ProcessedPieces)
+                    OUTPUT INSERTED.SessionId
+                    VALUES (?, ?, 'INPROCESS', ?)
+                    """,
+                    (plant, start_time, piece_count),
+                )
+                row = cur.fetchone()
+                conn.commit()
+            if row:
+                session_id = int(row[0])
+                with self._lock:
+                    mem = self._state.get(plant)
+                    if mem is not None and mem.session_id == -1:
+                        mem.session_id = session_id
+                print(
+                    f"[SessionManager] Burst-unaccounted session {session_id} created "
+                    f"for {plant} (start={start_time}, pieces={piece_count})"
+                )
+        except Exception as exc:
+            print(f"[SessionManager] Failed to create burst-unaccounted session for {plant}: {exc}")
+            with self._lock:
+                mem = self._state.get(plant)
+                if mem is not None and mem.session_id == -1:
+                    self._state.pop(plant, None)
+
     # ── Background loops ───────────────────────────────────────────────────
 
     def _poll_loop(self) -> None:

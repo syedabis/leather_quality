@@ -24,9 +24,9 @@ from app.db.connection import get_connection
 
 # ── Tuning (defaults — overridden from DB at startup via load_settings) ────────
 SHAPE_CONF_THRESHOLD   = 0.75   # min YOLO confidence to count a shape hit
-SHAPE_CONSECUTIVE_HITS = 2      # consecutive checks before mode fires
+SHAPE_CONSECUTIVE_HITS = 5      # consecutive checks before mode fires (~15 s at 5 FPS)
 SHAPE_COOLDOWN_S       = 15     # seconds to ignore shapes after a mode change
-SHAPE_CHECK_EVERY_N    = 15     # run shape model every N processed frames
+SHAPE_CHECK_EVERY_N    = 15     # run shape model every N processed frames (~3 s at 5 FPS)
 
 WASHING_IDLE_TIMEOUT_S = 1200   # 20 min idle → auto-end WASHING
 COLOR_BURST_COUNT      = 10     # pieces in burst window → auto-end COLOR_MATCHING
@@ -110,6 +110,7 @@ class ModeManager:
         ts:                     datetime,
         belt_active:            bool,
         has_production_session: bool,
+        pieces_in_roi:          bool = False,    # True when non-shape objects are in ROI right now
     ) -> None:
         """
         Called every SHAPE_CHECK_EVERY_N frames with the best YOLO shape detection.
@@ -133,6 +134,14 @@ class ModeManager:
 
         # ── No detection or below threshold ───────────────────────────────────
         if shape_name is None or confidence < SHAPE_CONF_THRESHOLD:
+            hits.clear()
+            return
+
+        # ── Shape must be alone in the ROI ────────────────────────────────────
+        # Reject the hit if other objects (leather pieces) are also present.
+        # roi_ids already has the shape card suppressed, so this only fires
+        # when genuine pieces are alongside the shape card.
+        if pieces_in_roi:
             hits.clear()
             return
 
@@ -160,8 +169,9 @@ class ModeManager:
     def on_piece_detected(self, plant: str, ts: datetime) -> bool:
         """
         Call for every piece_delta > 0 when the plant is in a non-NORMAL mode.
-        Counts the piece in the mode session and checks the COLOR_MATCHING burst.
-        Returns True if the mode ended (COLOR_MATCHING burst triggered).
+        Counts the piece in the mode session and checks the piece-burst end condition
+        for WASHING and COLOR_MATCHING (10 pieces in 35 s).
+        Returns True if the mode ended via burst trigger.
         """
         snap_to_end: Optional[PlantModeState] = None
 
@@ -174,7 +184,7 @@ class ModeManager:
             state.last_piece_ts = ts
             state.last_activity = ts
 
-            if state.mode == "COLOR_MATCHING":
+            if state.mode in ("COLOR_MATCHING", "WASHING"):
                 state.burst_times.append(ts)
                 cutoff = ts - timedelta(seconds=COLOR_BURST_WINDOW_S)
                 while state.burst_times and state.burst_times[0] < cutoff:
@@ -185,7 +195,7 @@ class ModeManager:
 
         if snap_to_end is not None:
             self._end_session_db(snap_to_end, datetime.now())
-            print(f"[ModeManager] {plant} COLOR_MATCHING ended — piece burst reached")
+            print(f"[ModeManager] {plant} {snap_to_end.mode} ended — piece burst reached")
             return True
 
         # Heartbeat: push updated piece count to DB

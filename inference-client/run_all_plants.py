@@ -697,11 +697,24 @@ def _plant_worker(
                         if _sconf >= 0.75:
                             _last_shape_box    = _box.tolist()
                             _shape_box_expiry  = frame_num + SHAPE_CHECK_EVERY_N * 2
+                # pieces_in_roi: are there real pieces in the ROI right now,
+                # EXCLUDING the shape card itself?
+                # Re-check track_results against the freshly-updated shape bbox
+                # so the card isn't mistakenly counted as a "piece".
+                if _last_shape_box is not None and frame_num <= _shape_box_expiry:
+                    _pieces_in_roi = any(
+                        _in_roi((_b[0]+_b[2])/2.0, (_b[1]+_b[3])/2.0, roi)
+                        and SimpleIoUTracker._iou(_b, _last_shape_box) <= 0.3
+                        for _, _b in track_results
+                    )
+                else:
+                    _pieces_in_roi = bool(roi_ids)
                 if not _is_off_today():
                     mode_manager.on_shape_result(
                         unit, _sname, _sconf, datetime.now(),
                         belt_active,
                         session_manager.get_state(unit) is not None,
+                        _pieces_in_roi,
                     )
 
             if not _is_off_today():
