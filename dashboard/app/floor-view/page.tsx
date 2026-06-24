@@ -44,11 +44,18 @@ function PlantCard({ plant, dayElapsedSecs, now, delay = 0 }: PlantCardProps) {
 
   // ── Session badge ──────────────────────────────────────────────────────
   type SessionBadge = { label: string; cls: string; pulse: boolean };
-  const sessionBadge: SessionBadge = sess == null
-    ? { label: 'NO SESSION',  cls: 'bg-gray-600 text-gray-200',              pulse: false }
+  const sessionBadge: SessionBadge =
+    sess == null
+      ? { label: 'NO SESSION',     cls: 'bg-gray-600 text-gray-200',   pulse: false }
+    : sess.session_type === 'WASHING'
+      ? { label: 'WASHING',        cls: 'bg-[#3B82F6] text-white',     pulse: true  }
+    : sess.session_type === 'COLOR_MATCHING'
+      ? { label: 'COLOR MATCHING', cls: 'bg-[#8B5CF6] text-white',     pulse: true  }
+    : sess.session_type === 'MAINTENANCE'
+      ? { label: 'MAINTENANCE',    cls: 'bg-[#EF4444] text-white',     pulse: true  }
     : sess.type === 'accounted'
-      ? { label: 'INPROCESS',   cls: 'bg-[#22C55E] text-black',               pulse: true  }
-      : { label: 'UNACCOUNTED', cls: 'bg-[#F59E0B] text-black',               pulse: true  };
+      ? { label: 'INPROCESS',      cls: 'bg-[#22C55E] text-black',     pulse: true  }
+      : { label: 'UNACCOUNTED',    cls: 'bg-[#F59E0B] text-black',     pulse: true  };
 
   // ── Lot info fields ────────────────────────────────────────────────────
   const lotLabel    = sess?.lot_no       ?? NA;
@@ -366,6 +373,9 @@ export default function FloorView() {
           {[
             { color: '#22C55E', label: 'INPROCESS (accounted)' },
             { color: '#F59E0B', label: 'UNACCOUNTED session'   },
+            { color: '#3B82F6', label: 'Washing mode'          },
+            { color: '#8B5CF6', label: 'Color matching mode'   },
+            { color: '#EF4444', label: 'Maintenance mode'      },
             { color: '#6B7280', label: 'No session'            },
           ].map(({ color, label }) => (
             <div key={label} className="flex items-center gap-1.5">

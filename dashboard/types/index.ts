@@ -27,6 +27,7 @@ export interface ActiveSession {
   expected_pieces: number | null;
   current_pieces:  number;
   type:            'accounted' | 'unaccounted';
+  session_type:    string;          // PRODUCTION | WASHING | COLOR_MATCHING | MAINTENANCE
   order_no:        string | null;
   article_name:    string | null;
   colour_name:     string | null;

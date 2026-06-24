@@ -39,6 +39,7 @@ from datetime import datetime
 from app.db.connection import get_connection
 from app.db.frame_processor import FrameProcessor
 from app.db.session_manager import session_manager
+from app.db.mode_manager import mode_manager, SHAPE_CHECK_EVERY_N
 
 # ── RTSP stream stability — force TCP transport so UDP packet loss can't
 #    cause "Duplicate POC" / "Could not find ref" decoder errors.
@@ -51,8 +52,9 @@ DEVICE   = "cuda:0" if torch.cuda.is_available() else "cpu"
 _gpu_lock = threading.Lock()   # serialize GPU calls — CUDA predict is not thread-safe
 
 # ── Paths ──────────────────────────────────────────────────────────────────
-BASE        = Path(__file__).parent
-MODEL       = BASE / "yolov8s_seg_best.pt"
+BASE         = Path(__file__).parent
+MODEL        = BASE / "yolov8s_seg_best.pt"
+SHAPE_MODEL  = BASE / "maintenance model.pt"
 VIDEOS_DIR  = BASE / "videos"
 CFG_FILE    = BASE / "unit_configs.json"
 
@@ -506,6 +508,7 @@ class RoiCounter:
 def _plant_worker(
     unit: str,
     model: YOLO,
+    shape_model: YOLO,
     stop_event: threading.Event,
     frame_queue: queue.Queue,
     unit_configs: dict,
@@ -523,6 +526,9 @@ def _plant_worker(
 
     tracker  = SimpleIoUTracker()
     counter  = RoiCounter()
+
+    _last_shape_box: Optional[list] = None  # cached shape-card bbox → suppresses it from piece count
+    _shape_box_expiry: int          = 0     # frame_num when cache expires
 
     total_count         = 0
     last_detection_time = time.time()
@@ -601,6 +607,10 @@ def _plant_worker(
                 in_roi = _in_roi(cx, cy, roi)
                 debug_tracks.append({"tid": tid, "cx": cx, "cy": cy, "in_roi": in_roi})
                 if in_roi:
+                    # Skip if this object overlaps a cached shape card bbox
+                    if (_last_shape_box is not None and frame_num <= _shape_box_expiry
+                            and SimpleIoUTracker._iou(box, _last_shape_box) > 0.3):
+                        continue
                     roi_ids.append(tid)
             counted_ids_now = counter.update(roi_ids)
 
@@ -617,6 +627,7 @@ def _plant_worker(
                 last_detection_time = time.time()
                 belt_active         = True
                 dynamic_frame_skip  = frame_skip
+                mode_manager.on_belt_activity(unit, datetime.now())
             elif time.time() - last_detection_time > IDLE_TIMEOUT_SEC:
                 belt_active        = False
                 dynamic_frame_skip = frame_skip * 2
@@ -664,6 +675,35 @@ def _plant_worker(
             # Break time (configurable, Friday differs) is excluded from idle
             # accumulation: idle time only ticks up inside shift AND outside
             # the break window.
+            # ── Shape detection (every SHAPE_CHECK_EVERY_N frames) ────────────
+            if mode_manager.tick_frame(unit):
+                with _gpu_lock:
+                    _sr = shape_model.predict(
+                        frame, conf=0.5, iou=0.45,
+                        device=DEVICE, verbose=False, show=False,
+                    )[0]
+                _sname, _sconf = None, 0.0
+                if _sr.boxes is not None and len(_sr.boxes) > 0:
+                    _confs  = _sr.boxes.conf.cpu().numpy()
+                    _bi     = int(_confs.argmax())
+                    _box    = _sr.boxes.xyxy.cpu().numpy()[_bi]
+                    _scx    = (_box[0] + _box[2]) / 2.0
+                    _scy    = (_box[1] + _box[3]) / 2.0
+                    _raw_name = shape_model.names[int(_sr.boxes.cls.cpu().numpy()[_bi])]
+                    _raw_conf = float(_confs[_bi])
+                    if _in_roi(_scx, _scy, roi):
+                        _sname = _raw_name
+                        _sconf = _raw_conf
+                        if _sconf >= 0.75:
+                            _last_shape_box    = _box.tolist()
+                            _shape_box_expiry  = frame_num + SHAPE_CHECK_EVERY_N * 2
+                if not _is_off_today():
+                    mode_manager.on_shape_result(
+                        unit, _sname, _sconf, datetime.now(),
+                        belt_active,
+                        session_manager.get_state(unit) is not None,
+                    )
+
             if not _is_off_today():
                 count_idle = in_shift and not _in_break()
                 FrameProcessor.process_frame(
@@ -676,7 +716,10 @@ def _plant_worker(
                     idle_sessions_delta  = new_idle_session if count_idle else 0,
                 )
                 if piece_delta > 0:
-                    session_manager.on_piece_detected(unit, datetime.now())
+                    if mode_manager.has_active_mode(unit):
+                        mode_manager.on_piece_detected(unit, datetime.now())
+                    else:
+                        session_manager.on_piece_detected(unit, datetime.now())
             new_idle_session = 0
 
             # ── Render display frame (full original resolution) ────────────
@@ -812,7 +855,14 @@ def main() -> None:
     print(f"[model] Loading {args.model.name} ...")
     model = YOLO(str(args.model))
     model.to(DEVICE)
-    print(f"[model] Loaded. Running 6 plants at target {TARGET_FPS} FPS each.\n")
+    print(f"[model] Loaded. Running 6 plants at target {TARGET_FPS} FPS each.")
+
+    if not SHAPE_MODEL.exists():
+        raise FileNotFoundError(f"Shape model not found: {SHAPE_MODEL}")
+    print(f"[shape] Loading {SHAPE_MODEL.name} ...")
+    shape_model = YOLO(str(SHAPE_MODEL))
+    shape_model.to(DEVICE)
+    print(f"[shape] Loaded.\n")
 
     unit_configs = _load_unit_configs()
     stop_event   = threading.Event()
@@ -838,13 +888,14 @@ def main() -> None:
 
     # Start session manager (polls AppSessions + handles timers)
     session_manager.start()
+    mode_manager.start()
 
     # Start one worker thread per plant
     threads = []
     for unit in UNITS:
         t = threading.Thread(
             target=_plant_worker,
-            args=(unit, model, stop_event, frame_queues[unit], unit_configs, args.max_seconds),
+            args=(unit, model, shape_model, stop_event, frame_queues[unit], unit_configs, args.max_seconds),
             name=f"worker-{unit}",
             daemon=True,
         )
@@ -888,6 +939,7 @@ def main() -> None:
         # covers ESC, the stop-signal file, natural worker exit, and Ctrl+C.
         stop_event.set()
         session_manager.end_all_active_sessions()
+        mode_manager.end_all_active_modes()
         session_manager.stop()
         for t in threads:
             t.join(timeout=5)

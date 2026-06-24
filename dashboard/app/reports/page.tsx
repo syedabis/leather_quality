@@ -27,12 +27,18 @@ interface SummaryData {
   date: string; shift_start: string; shift_end: string;
   available_hours: number; plants: PlantRow[];
 }
+interface DetailSubRow {
+  lot_no: string; session_type: string; pieces: number; plant: string;
+  start_time: string; end_time: string; duration_label: string;
+}
 interface DetailRow {
   row_type: 'session' | 'idle' | 'break';
   lot_no?: string; order_no?: string; party_name?: string;
   article_name?: string; colour_name?: string; pieces?: number; plant?: string;
+  session_type?: string;
   start_time: string; end_time: string; duration_label: string; label?: string;
   idle_within_label?: string; active_label?: string;
+  sub_rows?: DetailSubRow[];
 }
 interface DetailPlant {
   plant: string;
@@ -318,7 +324,15 @@ function DailyDetailTab() {
                   {pd.rows.map((row, ri) =>
                     row.row_type === 'session' ? (
                       <tr key={ri} className="hover:bg-gray-50 dark:hover:bg-[#1a1a1a] transition-colors">
-                        <Td className="font-semibold text-gray-900 dark:text-white">{row.lot_no}</Td>
+                        <Td className="font-semibold text-gray-900 dark:text-white">
+                          {row.session_type === 'WASHING' ? (
+                            <span className="px-2 py-0.5 rounded text-xs font-bold bg-blue-500 text-white">{row.lot_no}</span>
+                          ) : row.session_type === 'COLOR_MATCHING' ? (
+                            <span className="px-2 py-0.5 rounded text-xs font-bold bg-purple-500 text-white">{row.lot_no}</span>
+                          ) : row.session_type === 'MAINTENANCE' ? (
+                            <span className="px-2 py-0.5 rounded text-xs font-bold bg-red-500 text-white">{row.lot_no}</span>
+                          ) : row.lot_no}
+                        </Td>
                         <Td className="text-gray-600 dark:text-gray-400">{row.order_no}</Td>
                         <Td className="text-gray-700 dark:text-gray-300">{row.party_name}</Td>
                         <Td className="text-gray-700 dark:text-gray-300">{row.article_name}</Td>
@@ -336,14 +350,36 @@ function DailyDetailTab() {
                         </Td>
                       </tr>
                     ) : row.row_type === 'break' ? (
-                      <tr key={ri} className="bg-purple-50 dark:bg-purple-900/10">
-                        <Td colSpan={6} className="font-semibold text-purple-700 dark:text-purple-400 text-left pl-4">{row.label}</Td>
-                        <Td className="text-purple-600 dark:text-purple-500" />
-                        <Td className="text-purple-700 dark:text-purple-400">{row.start_time}</Td>
-                        <Td className="text-purple-700 dark:text-purple-400">{row.end_time}</Td>
-                        <Td className="text-purple-700 dark:text-purple-400">{row.duration_label}</Td>
-                        <Td /><Td />
-                      </tr>
+                      <>
+                        <tr key={ri} className="bg-purple-50 dark:bg-purple-900/10">
+                          <Td colSpan={6} className="font-semibold text-purple-700 dark:text-purple-400 text-left pl-4">{row.label}</Td>
+                          <Td className="text-purple-600 dark:text-purple-500" />
+                          <Td className="text-purple-700 dark:text-purple-400">{row.start_time}</Td>
+                          <Td className="text-purple-700 dark:text-purple-400">{row.end_time}</Td>
+                          <Td className="text-purple-700 dark:text-purple-400">{row.duration_label}</Td>
+                          <Td /><Td />
+                        </tr>
+                        {row.sub_rows?.map((sr, sri) => (
+                          <tr key={`${ri}-sub-${sri}`} className="bg-purple-50/60 dark:bg-purple-900/5 border-l-4 border-purple-400 dark:border-purple-600">
+                            <Td className="pl-8 font-semibold">
+                              {sr.session_type === 'WASHING' ? (
+                                <span className="px-2 py-0.5 rounded text-xs font-bold bg-blue-500 text-white">{sr.lot_no}</span>
+                              ) : sr.session_type === 'COLOR_MATCHING' ? (
+                                <span className="px-2 py-0.5 rounded text-xs font-bold bg-purple-500 text-white">{sr.lot_no}</span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded text-xs font-bold bg-red-500 text-white">{sr.lot_no}</span>
+                              )}
+                            </Td>
+                            <Td className="text-gray-400 dark:text-gray-600" colSpan={4}>— during break —</Td>
+                            <Td className="font-semibold text-gray-700 dark:text-gray-300">{sr.pieces.toLocaleString()}</Td>
+                            <Td className="text-gray-500 dark:text-gray-400">{sr.plant}</Td>
+                            <Td className="text-gray-600 dark:text-gray-400">{sr.start_time}</Td>
+                            <Td className="text-gray-600 dark:text-gray-400">{sr.end_time}</Td>
+                            <Td className="text-gray-600 dark:text-gray-400">{sr.duration_label}</Td>
+                            <Td /><Td />
+                          </tr>
+                        ))}
+                      </>
                     ) : (
                       <tr key={ri} className="bg-amber-50 dark:bg-amber-900/10">
                         <Td colSpan={6} className="font-semibold text-amber-700 dark:text-amber-400 text-left pl-4">{row.label}</Td>

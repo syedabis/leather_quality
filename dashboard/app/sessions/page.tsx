@@ -14,6 +14,7 @@ interface AppSession {
   processed_pieces: number;
   status:           string;
   type:             'accounted' | 'unaccounted';
+  session_type:     string;   // PRODUCTION | WASHING | COLOR_MATCHING | MAINTENANCE
   order_no:         string | null;
   article_name:     string | null;
   colour_name:      string | null;
@@ -43,7 +44,7 @@ function fmtDuration(startIso: string | null, endIso: string | null): string {
 
 export default function Sessions() {
   const [filterPlant, setFilterPlant] = useState('all');
-  const [filterType,  setFilterType]  = useState<'all' | 'accounted' | 'unaccounted'>('all');
+  const [filterType,  setFilterType]  = useState<'all' | 'accounted' | 'unaccounted' | 'WASHING' | 'COLOR_MATCHING' | 'MAINTENANCE'>('all');
   const [search,      setSearch]      = useState('');
   const [sessions,    setSessions]    = useState<AppSession[]>([]);
   const [loading,     setLoading]     = useState(true);
@@ -68,7 +69,13 @@ export default function Sessions() {
 
   const filtered = sessions.filter(r => {
     if (filterPlant !== 'all' && r.plant !== filterPlant) return false;
-    if (filterType  !== 'all' && r.type  !== filterType)  return false;
+    if (filterType !== 'all') {
+      if (filterType === 'accounted' || filterType === 'unaccounted') {
+        if (r.type !== filterType) return false;
+      } else {
+        if (r.session_type !== filterType) return false;
+      }
+    }
     if (!search.trim()) return true;
     const q = search.trim().toLowerCase();
     return [r.plant, r.lot_no, r.party_name, r.order_no, r.colour_name, r.article_name]
@@ -112,6 +119,9 @@ export default function Sessions() {
               <option value="all">All Types</option>
               <option value="accounted">Accounted</option>
               <option value="unaccounted">Unaccounted</option>
+              <option value="WASHING">Washing</option>
+              <option value="COLOR_MATCHING">Color Matching</option>
+              <option value="MAINTENANCE">Maintenance</option>
             </select>
           </div>
 
@@ -178,7 +188,19 @@ export default function Sessions() {
 
                     {/* Type */}
                     <td className="px-4 py-3.5">
-                      {row.type === 'accounted' ? (
+                      {row.session_type === 'WASHING' ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-800">
+                          Washing
+                        </span>
+                      ) : row.session_type === 'COLOR_MATCHING' ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400 border border-purple-200 dark:border-purple-800">
+                          Color Matching
+                        </span>
+                      ) : row.session_type === 'MAINTENANCE' ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800">
+                          Maintenance
+                        </span>
+                      ) : row.type === 'accounted' ? (
                         <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
                           Accounted
                         </span>

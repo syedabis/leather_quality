@@ -320,12 +320,14 @@ def _split_gap(gap_start: datetime, gap_end: datetime,
 
 def _emit_gap_rows(gap_start: datetime, gap_end: datetime,
                     eff_break: tuple[datetime, datetime] | None,
-                    rows_out: list) -> tuple[int, int]:
+                    rows_out: list,
+                    break_sub_rows: list | None = None) -> tuple[int, int]:
     """Split a gap into idle/break segments, append timeline rows for each,
     and return (idle_seconds_added, break_seconds_added).
 
     Idle segments shorter than 60s are dropped (matches prior behaviour);
-    break segments are always emitted.
+    break segments are always emitted. break_sub_rows, if provided, are
+    attached to the break row as nested mode-session entries.
     """
     add_idle = 0
     add_break = 0
@@ -334,13 +336,16 @@ def _emit_gap_rows(gap_start: datetime, gap_end: datetime,
         if kind == "break":
             if seg > 0:
                 add_break += seg
-                rows_out.append({
+                br: dict = {
                     "row_type":       "break",
                     "label":          "BREAK TIME",
                     "start_time":     seg_a.strftime("%H:%M"),
                     "end_time":       seg_b.strftime("%H:%M"),
                     "duration_label": _fmt_duration(seg),
-                })
+                }
+                if break_sub_rows:
+                    br["sub_rows"] = break_sub_rows
+                rows_out.append(br)
         else:
             if seg > 60:
                 add_idle += seg
@@ -523,7 +528,8 @@ def get_active_sessions() -> dict[str, dict | None]:
                    ORDER BY s2.SessionId DESC
                )) AS ExpectedPieces,
                s.ProcessedPieces,
-               wb.OrderNo, wb.ArticleName, wb.ColourName, wb.PartyName, wb.PK
+               wb.OrderNo, wb.ArticleName, wb.ColourName, wb.PartyName, wb.PK,
+               ISNULL(s.session_type, 'PRODUCTION')
         FROM dbo.AppSessions s
         LEFT JOIN dbo.WBIssuance_Info wb ON wb.IssueNoCounter = s.IssueNoCounter
         WHERE s.Status = 'INPROCESS'
@@ -539,7 +545,8 @@ def get_active_sessions() -> dict[str, dict | None]:
             for row in cur.fetchall():
                 (sid, lot_no, plant, start_time,
                  exp_pcs, proc_pcs,
-                 order_no, article_name, colour_name, party_name, pk_code) = row
+                 order_no, article_name, colour_name, party_name, pk_code,
+                 session_type) = row
                 if plant not in result or plant in seen:
                     continue
                 seen.add(plant)
@@ -551,6 +558,7 @@ def get_active_sessions() -> dict[str, dict | None]:
                     "expected_pieces": int(exp_pcs)  if exp_pcs  is not None else None,
                     "current_pieces":  int(proc_pcs) if proc_pcs is not None else 0,
                     "type":            "accounted" if lot_no is not None else "unaccounted",
+                    "session_type":    session_type or "PRODUCTION",
                     "order_no":        order_no,
                     "article_name":    article_name,
                     "colour_name":     colour_name,
@@ -580,7 +588,8 @@ def get_app_sessions(plant: str | None = None, limit: int = 200) -> list[dict]:
                 ORDER BY s2.SessionId DESC
             )) AS ExpectedPieces,
             s.ProcessedPieces, s.Status,
-            wb.OrderNo, wb.ArticleName, wb.ColourName, wb.PartyName, wb.PK
+            wb.OrderNo, wb.ArticleName, wb.ColourName, wb.PartyName, wb.PK,
+            ISNULL(s.session_type, 'PRODUCTION')
         FROM dbo.AppSessions s
         LEFT JOIN dbo.WBIssuance_Info wb ON wb.IssueNoCounter = s.IssueNoCounter
         {where}
@@ -594,7 +603,8 @@ def get_app_sessions(plant: str | None = None, limit: int = 200) -> list[dict]:
             for row in cur.fetchall():
                 (sid, lot_no, plant_id, start_time, end_time,
                  exp_pcs, proc_pcs, status,
-                 order_no, article_name, colour_name, party_name, pk_code) = row
+                 order_no, article_name, colour_name, party_name, pk_code,
+                 session_type) = row
                 results.append({
                     "session_id":       sid,
                     "lot_no":           str(lot_no) if lot_no is not None else None,
@@ -605,6 +615,7 @@ def get_app_sessions(plant: str | None = None, limit: int = 200) -> list[dict]:
                     "processed_pieces": int(proc_pcs) if proc_pcs is not None else 0,
                     "status":           status,
                     "type":             "accounted" if lot_no is not None else "unaccounted",
+                    "session_type":     session_type or "PRODUCTION",
                     "order_no":         order_no,
                     "article_name":     article_name,
                     "colour_name":      colour_name,
@@ -938,7 +949,8 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
     sql = f"""
         SELECT s.SessionId, s.LotNo, s.Plant, s.StartTime, s.EndTime,
                s.ExpectedPieces, s.ProcessedPieces,
-               wb.OrderNo, wb.ArticleName, wb.ColourName, wb.PartyName
+               wb.OrderNo, wb.ArticleName, wb.ColourName, wb.PartyName,
+               ISNULL(s.session_type, 'PRODUCTION')
         FROM dbo.AppSessions s
         OUTER APPLY (
             SELECT TOP 1 OrderNo, ArticleName, ColourName, PartyName
@@ -961,17 +973,21 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
     except Exception as exc:
         return {"error": str(exc), "date": report_date, "plants": []}
 
+    _MODE_TYPES = {"WASHING", "COLOR_MATCHING", "MAINTENANCE"}
+
     from collections import defaultdict
     by_plant: dict[str, list] = defaultdict(list)
     for row in raw_rows:
         (sid, lot_no, plant_id, start_time, end_time,
-         exp_pcs, proc_pcs, order_no, article_name, colour_name, party_name) = row
+         exp_pcs, proc_pcs, order_no, article_name, colour_name, party_name,
+         session_type) = row
         by_plant[plant_id].append({
-            "start_time": start_time,
-            "end_time":   end_time,
-            "lot_no":     str(lot_no) if lot_no else None,
-            "pieces":     int(proc_pcs) if proc_pcs else 0,
-            "order_no":   order_no,
+            "start_time":   start_time,
+            "end_time":     end_time,
+            "lot_no":       str(lot_no) if lot_no else None,
+            "session_type": session_type or "PRODUCTION",
+            "pieces":       int(proc_pcs) if proc_pcs else 0,
+            "order_no":     order_no,
             "article_name": article_name,
             "colour_name":  colour_name,
             "party_name":   party_name,
@@ -1044,71 +1060,123 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
         break_s = 0
         pieces  = 0
 
-        if sessions and sessions[0]["start_time"] > shift_start_dt:
+        # ── Absorb mode sessions that fall entirely within the break window ──
+        # They become nested sub-rows inside the BREAK TIME row instead of
+        # appearing as separate top-level session rows. Their pieces are still
+        # counted; their duration is part of break time, not run time.
+        _absorbed: list[dict] = []
+        _main_sessions: list[dict] = []
+        if eff_break:
+            _bk_s, _bk_e = eff_break
+            for _s in sessions:
+                if (_s["session_type"] in _MODE_TYPES
+                        and _s["start_time"] >= _bk_s
+                        and _s["end_time"] <= _bk_e):
+                    _absorbed.append(_s)
+                else:
+                    _main_sessions.append(_s)
+        else:
+            _main_sessions = sessions
+
+        _break_sub_rows: list[dict] = []
+        for _s in sorted(_absorbed, key=lambda x: x["start_time"]):
+            _dur = max(0, int((_s["end_time"] - _s["start_time"]).total_seconds()))
+            _st = _s["session_type"]
+            _break_sub_rows.append({
+                "row_type":       "session",
+                "lot_no":         _st.replace("_", " "),
+                "session_type":   _st,
+                "pieces":         _s["pieces"],
+                "plant":          plant_id,
+                "start_time":     _s["start_time"].strftime("%H:%M"),
+                "end_time":       _s["end_time"].strftime("%H:%M"),
+                "duration_label": _fmt_duration(_dur),
+                "order_no": "N/A", "party_name": "N/A",
+                "article_name": "N/A", "colour_name": "N/A",
+            })
+            pieces += _s["pieces"]
+
+        # ── Emit rows using only _main_sessions so gaps span the full break ──
+        _sub = _break_sub_rows or None   # pass None when empty
+
+        if not _main_sessions and sessions:
+            # Only absorbed sessions exist — emit the full shift as one gap block
             add_idle, add_break = _emit_gap_rows(
-                shift_start_dt, sessions[0]["start_time"], eff_break, rows_out)
+                shift_start_dt, shift_end_dt, eff_break, rows_out, _sub)
             idle_s  += add_idle
             break_s += add_break
-
-        for i, s in enumerate(sessions):
-            dur_s = int((s["end_time"] - s["start_time"]).total_seconds())
-            if dur_s < 0:
-                dur_s = 0
-            run_s  += dur_s
-            pieces += s["pieces"]
-            rows_out.append({
-                "row_type":       "session",
-                "lot_no":         s["lot_no"] or "UNACCOUNTED",
-                "order_no":       s["order_no"]     or "N/A",
-                "party_name":     s["party_name"]   or "N/A",
-                "article_name":   s["article_name"] or "N/A",
-                "colour_name":    s["colour_name"]  or "N/A",
-                "pieces":         s["pieces"],
-                "plant":          plant_id,
-                "start_time":     s["start_time"].strftime("%H:%M"),
-                "end_time":       s["end_time"].strftime("%H:%M"),
-                "duration_label": _fmt_duration(dur_s),
-            })
-
-            # Within-session idle — accumulate into a field on the session row
-            # instead of adding separate idle rows to the timeline.
-            # _plant_idle_ivs is pre-merged so overlapping intervals can't
-            # push _within_idle_s above the actual session duration.
-            _within_idle_s = 0
-            for _ip_start, _ip_end in _plant_idle_ivs:
-                if _ip_end <= s["start_time"] - _SKEW:
-                    continue
-                if _ip_start >= s["end_time"] + _SKEW:
-                    continue
-                _cs = max(_ip_start, s["start_time"], shift_start_dt)
-                _ce = min(_ip_end,   s["end_time"],   shift_end_dt)
-                if _ce <= _cs:
-                    continue
-                _ip_dur = int((_ce - _cs).total_seconds())
-                if _ip_dur > 0:
-                    _within_idle_s += _ip_dur
-            _within_idle_s = min(_within_idle_s, dur_s)  # safety cap
-            _active_s = dur_s - _within_idle_s
-            run_s  -= _within_idle_s
-            idle_s += _within_idle_s
-            rows_out[-1]["active_label"] = _fmt_duration(_active_s)
-            if _within_idle_s > 1:                        # suppress sub-second noise
-                rows_out[-1]["idle_within_label"] = _fmt_duration(_within_idle_s)
-
-            if i < len(sessions) - 1:
+        else:
+            if _main_sessions and _main_sessions[0]["start_time"] > shift_start_dt:
                 add_idle, add_break = _emit_gap_rows(
-                    s["end_time"], sessions[i + 1]["start_time"], eff_break, rows_out)
+                    shift_start_dt, _main_sessions[0]["start_time"], eff_break, rows_out, _sub)
                 idle_s  += add_idle
                 break_s += add_break
 
-        if sessions and shift_end_dt > sessions[-1]["end_time"]:
-            # Skip trailing idle when the plant is currently running a session —
-            # the gap from last completed session to now is active, not idle.
-            if plant_id not in _active_plants:
-                add_idle, add_break = _emit_gap_rows(
-                    sessions[-1]["end_time"], shift_end_dt, eff_break, rows_out)
-                idle_s  += add_idle
-                break_s += add_break
+            for i, s in enumerate(_main_sessions):
+                dur_s = int((s["end_time"] - s["start_time"]).total_seconds())
+                if dur_s < 0:
+                    dur_s = 0
+                run_s  += dur_s
+                pieces += s["pieces"]
+                _stype = s.get("session_type", "PRODUCTION")
+                _label = (
+                    _stype.replace("_", " ") if _stype in _MODE_TYPES
+                    else (s["lot_no"] or "UNACCOUNTED")
+                )
+                rows_out.append({
+                    "row_type":       "session",
+                    "lot_no":         _label,
+                    "session_type":   _stype,
+                    "order_no":       s["order_no"]     or "N/A",
+                    "party_name":     s["party_name"]   or "N/A",
+                    "article_name":   s["article_name"] or "N/A",
+                    "colour_name":    s["colour_name"]  or "N/A",
+                    "pieces":         s["pieces"],
+                    "plant":          plant_id,
+                    "start_time":     s["start_time"].strftime("%H:%M"),
+                    "end_time":       s["end_time"].strftime("%H:%M"),
+                    "duration_label": _fmt_duration(dur_s),
+                })
+
+                # Within-session idle — accumulate into a field on the session row
+                # instead of adding separate idle rows to the timeline.
+                # _plant_idle_ivs is pre-merged so overlapping intervals can't
+                # push _within_idle_s above the actual session duration.
+                _within_idle_s = 0
+                for _ip_start, _ip_end in _plant_idle_ivs:
+                    if _ip_end <= s["start_time"] - _SKEW:
+                        continue
+                    if _ip_start >= s["end_time"] + _SKEW:
+                        continue
+                    _cs = max(_ip_start, s["start_time"], shift_start_dt)
+                    _ce = min(_ip_end,   s["end_time"],   shift_end_dt)
+                    if _ce <= _cs:
+                        continue
+                    _ip_dur = int((_ce - _cs).total_seconds())
+                    if _ip_dur > 0:
+                        _within_idle_s += _ip_dur
+                _within_idle_s = min(_within_idle_s, dur_s)  # safety cap
+                _active_s = dur_s - _within_idle_s
+                run_s  -= _within_idle_s
+                idle_s += _within_idle_s
+                rows_out[-1]["active_label"] = _fmt_duration(_active_s)
+                if _within_idle_s > 1:                        # suppress sub-second noise
+                    rows_out[-1]["idle_within_label"] = _fmt_duration(_within_idle_s)
+
+                if i < len(_main_sessions) - 1:
+                    add_idle, add_break = _emit_gap_rows(
+                        s["end_time"], _main_sessions[i + 1]["start_time"], eff_break, rows_out, _sub)
+                    idle_s  += add_idle
+                    break_s += add_break
+
+            if _main_sessions and shift_end_dt > _main_sessions[-1]["end_time"]:
+                # Skip trailing idle when the plant is currently running a session —
+                # the gap from last completed session to now is active, not idle.
+                if plant_id not in _active_plants:
+                    add_idle, add_break = _emit_gap_rows(
+                        _main_sessions[-1]["end_time"], shift_end_dt, eff_break, rows_out, _sub)
+                    idle_s  += add_idle
+                    break_s += add_break
 
         observed_s = run_s + idle_s
         util_pct   = round(run_s / observed_s * 100, 1) if observed_s else 0
