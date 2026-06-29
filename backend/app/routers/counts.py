@@ -106,6 +106,21 @@ def get_idle_periods(
         raise HTTPException(status_code=503, detail=str(exc))
 
 
+# ── Plants — REST equivalent of /ws/plants ────────────────────────────────────
+
+@router.get("/plants")
+def get_plants():
+    """All 6 plants with live state + active session. Poll every 15 s."""
+    try:
+        states          = queries.get_plant_states()
+        active_sessions = queries.get_active_sessions()
+        for state in states:
+            state["active_session"] = active_sessions.get(state.get("plant_id"))
+        return states
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 @router.get("/summary")

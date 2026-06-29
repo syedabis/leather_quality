@@ -17,8 +17,8 @@ from app.db.connection import get_connection
 
 # ── Tuning constants ───────────────────────────────────────────────────────
 POLL_INTERVAL_S             = 5     # how often to poll AppSessions
-CONSECUTIVE_FOR_UNACCOUNTED = 5     # pieces needed to auto-open unaccounted session
-CONSECUTIVE_GAP_RESET_S     = 120   # gap (s) between pieces that resets the buffer
+CONSECUTIVE_FOR_UNACCOUNTED = 10    # pieces needed within BURST_WINDOW_S to auto-open unaccounted session
+BURST_WINDOW_S              = 40    # sliding window (s) — pieces older than this are dropped from buffer
 ACCOUNTED_GRACE_S           = 180   # TESTING: 3 min silence → end accounted session (normally 600 = 10 min)
 UNACCOUNTED_IDLE_S          = 180   # TESTING: 3 min silence → end unaccounted session (normally 900 = 15 min)
 TIMER_CHECK_INTERVAL_S      = 30    # how often to check timers
@@ -177,16 +177,13 @@ class SessionManager:
                 state.last_piece_time = ts
                 return
 
-            # No active session — accumulate consecutive buffer
+            # No active session — accumulate sliding-window buffer
             buf = self._consec_buffer.setdefault(plant, [])
-
-            # Reset if the gap since the last buffered piece exceeds the threshold
-            if buf:
-                gap = (ts - buf[-1]).total_seconds()
-                if gap > CONSECUTIVE_GAP_RESET_S:
-                    buf.clear()
-
             buf.append(ts)
+
+            # Drop pieces older than BURST_WINDOW_S (sliding window)
+            while buf and (ts - buf[0]).total_seconds() > BURST_WINDOW_S:
+                buf.pop(0)
 
             if len(buf) >= CONSECUTIVE_FOR_UNACCOUNTED:
                 session_start_time = buf[0]

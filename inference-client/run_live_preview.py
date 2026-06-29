@@ -38,153 +38,11 @@ import requests
 import torch
 from ultralytics import YOLO
 
-from app.db.connection import get_connection
-from app.db.frame_processor import FrameProcessor
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
 
 
-# ── Shift / break / holiday helpers (mirror run_all_plants.py) ─────────────
-
-_shift_start = "07:00"
-_shift_end   = "17:00"
-
-_break_start_weekday = "13:00"
-_break_end_weekday   = "14:00"
-_break_start_friday  = "13:00"
-_break_end_friday    = "14:30"
-
-_dynamic_refresh_interval_s = 300
-_dynamic_last_refresh_ts    = 0.0
-_holiday_today_cached       = False
-_holiday_checked_at_startup = False
-
-_weekly_off_days_csv        = "Sun"
-_weekly_off_today_cached    = False
-_weekly_off_checked_at_startup = False
-
-
-def _load_settings_once() -> None:
-    """Seed shift + break-time + weekly-off module state from DB on startup."""
-    global _shift_start, _shift_end
-    global _break_start_weekday, _break_end_weekday, _break_start_friday, _break_end_friday
-    global _weekly_off_days_csv
-    try:
-        with get_connection() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT setting_key, setting_value FROM dbo.SystemSettings")
-            s = {r[0]: r[1] for r in cur.fetchall()}
-        if s.get("shift_start"):          _shift_start          = s["shift_start"]
-        if s.get("shift_end"):            _shift_end            = s["shift_end"]
-        if s.get("break_start_weekday"):  _break_start_weekday  = s["break_start_weekday"]
-        if s.get("break_end_weekday"):    _break_end_weekday    = s["break_end_weekday"]
-        if s.get("break_start_friday"):   _break_start_friday   = s["break_start_friday"]
-        if s.get("break_end_friday"):     _break_end_friday     = s["break_end_friday"]
-        if s.get("weekly_off_days"):      _weekly_off_days_csv  = s["weekly_off_days"]
-    except Exception as e:
-        print(f"[settings] Could not read SystemSettings, using defaults: {e}")
-
-
-def _parse_hhmm_to_min(s: str) -> int:
-    try:
-        h, m = s.split(":")
-        return int(h) * 60 + int(m)
-    except Exception:
-        return 0
-
-
-def _within_shift() -> bool:
-    now = time.strftime("%H:%M")
-    return _shift_start <= now <= _shift_end
-
-
-def _in_break() -> bool:
-    now = time.localtime()
-    now_min = now.tm_hour * 60 + now.tm_min
-    if now.tm_wday == 4:           # Friday
-        start_s, end_s = _break_start_friday, _break_end_friday
-    else:
-        start_s, end_s = _break_start_weekday, _break_end_weekday
-    return _parse_hhmm_to_min(start_s) <= now_min < _parse_hhmm_to_min(end_s)
-
-
-def _refresh_dynamic_state() -> None:
-    """Re-read break-time settings from DB every 5 min (failure-tolerant)."""
-    global _dynamic_last_refresh_ts
-    global _break_start_weekday, _break_end_weekday, _break_start_friday, _break_end_friday
-    now_ts = time.time()
-    if now_ts - _dynamic_last_refresh_ts < _dynamic_refresh_interval_s:
-        return
-    try:
-        with get_connection() as conn:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT setting_key, setting_value FROM dbo.SystemSettings "
-                "WHERE setting_key IN ('break_start_weekday','break_end_weekday',"
-                "'break_start_friday','break_end_friday')"
-            )
-            s = {r[0]: r[1] for r in cur.fetchall()}
-            if s.get("break_start_weekday"): _break_start_weekday = s["break_start_weekday"]
-            if s.get("break_end_weekday"):   _break_end_weekday   = s["break_end_weekday"]
-            if s.get("break_start_friday"):  _break_start_friday  = s["break_start_friday"]
-            if s.get("break_end_friday"):    _break_end_friday    = s["break_end_friday"]
-            _dynamic_last_refresh_ts = now_ts
-    except Exception as e:
-        print(f"[dynamic] refresh failed (keeping previous values): {e}")
-
-
-def _check_holiday_at_startup() -> None:
-    """One-shot holiday check. Result is frozen for the run."""
-    global _holiday_today_cached, _holiday_checked_at_startup
-    if _holiday_checked_at_startup:
-        return
-    today = time.strftime("%Y-%m-%d")
-    try:
-        with get_connection() as conn:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT description FROM dbo.Holidays WHERE holiday_date = CAST(? AS DATE)",
-                (today,),
-            )
-            row = cur.fetchone()
-            _holiday_today_cached = row is not None
-            if _holiday_today_cached:
-                desc = row[0] or "(no description)"
-                print(f"[holiday]  Today ({today}) is marked a holiday — "
-                      f"DB writes will be skipped. Reason: {desc}")
-            else:
-                print(f"[holiday]  Today ({today}) is not a holiday.")
-    except Exception as e:
-        _holiday_today_cached = False
-        print(f"[holiday]  Check failed (treating as non-holiday): {e}")
-    _holiday_checked_at_startup = True
-
-
-def _is_holiday_today() -> bool:
-    return _holiday_today_cached
-
-
-def _check_weekly_off_at_startup() -> None:
-    """One-shot weekly-off check, frozen for the lifetime of the run."""
-    global _weekly_off_today_cached, _weekly_off_checked_at_startup
-    if _weekly_off_checked_at_startup:
-        return
-    today_abbrev = time.strftime("%a")
-    off = {d.strip() for d in _weekly_off_days_csv.split(",") if d.strip()}
-    _weekly_off_today_cached = today_abbrev in off
-    if _weekly_off_today_cached:
-        print(f"[weekly]   Today is {today_abbrev} — configured as a weekly off-day. "
-              f"DB writes will be skipped.")
-    else:
-        print(f"[weekly]   Today is {today_abbrev}. Configured off-days: "
-              f"{_weekly_off_days_csv}")
-    _weekly_off_checked_at_startup = True
-
-
-def _is_weekly_off_today() -> bool:
-    return _weekly_off_today_cached
-
-
-def _is_off_today() -> bool:
-    return _is_holiday_today() or _is_weekly_off_today()
+def _is_image(path) -> bool:
+    return Path(str(path)).suffix.lower() in IMAGE_EXTS
 
 # ── GPU / device selection ─────────────────────────────────────────────────
 # GTX 960 (Maxwell SM 5.2) is supported by CUDA 11.8 + PyTorch cu118.
@@ -297,6 +155,7 @@ def _get_unit_source(configs: dict, unit: str) -> Optional[str]:
     return src or None
 
 
+
 def _is_stream_url(source: str) -> bool:
     s = source.lower()
     return s.startswith(("rtsp://", "rtsps://", "http://", "https://", "udp://", "tcp://"))
@@ -315,9 +174,11 @@ def _resolve_sources(source: str) -> list:
     p = Path(source)
     if p.is_dir():
         videos = sorted(p.glob("*.mp4"))
-        if not videos:
-            print(f"  [warn] Directory has no .mp4 files: {p}")
-        return videos
+        images = sorted(f for ext in IMAGE_EXTS for f in p.glob(f"*{ext}"))
+        sources = sorted(set(videos + images), key=lambda x: x.name)
+        if not sources:
+            print(f"  [warn] Directory has no .mp4 or image files: {p}")
+        return sources
     if p.is_file():
         return [p]
     print(f"  [warn] Source not found: {source}")
@@ -567,9 +428,8 @@ def run_video(model: YOLO, video_source, unit: str,
     # inference keeps up with real time.  E.g. 25 FPS source / 5 TARGET_FPS = skip 5.
     frame_skip = max(1, round(video_fps / TARGET_FPS))
 
-    configs = unit_configs or {}
-    roi, _line = _get_unit_cfg(configs, unit, frame_w, frame_h)  # uses normalized coords from config
-
+    configs   = unit_configs or {}
+    roi, _line = _get_unit_cfg(configs, unit, frame_w, frame_h)
 
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -610,7 +470,8 @@ def run_video(model: YOLO, video_source, unit: str,
         print(f"  Skipping first {SKIP_START_SECONDS}s ({skip_start_frames} frames)")
 
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-    
+    cv2.setWindowProperty(WINDOW_NAME, cv2.WND_PROP_TOPMOST, 1)  # bring to front
+    print(f"  [keys] Click on the video window, then: Q=next  W=back  ESC=quit")
     print(f"\n{'─'*60}")
     print(f"  {unit}  |  {name}{'  [LIVE STREAM]' if is_stream else ''}")
     if total_frames > 0:
@@ -645,6 +506,8 @@ def run_video(model: YOLO, video_source, unit: str,
         results    = model.predict(frame, conf=CONF, iou=0.45, device=DEVICE, verbose=False, show=False)
         result     = results[0]
         boxes_xyxy = result.boxes.xyxy.cpu().numpy().tolist() if result.boxes is not None and len(result.boxes) > 0 else []
+        confs_list = result.boxes.conf.cpu().numpy().tolist() if result.boxes is not None and len(result.boxes) > 0 else []
+        _box_to_conf = {tuple(int(v) for v in b): c for b, c in zip(boxes_xyxy, confs_list)}
 
         track_results   = _suppress_overlapping_tracks(tracker.update(boxes_xyxy))   # [(tid, box), ...]
         debug_tracks: list[dict] = []
@@ -653,7 +516,8 @@ def run_video(model: YOLO, video_source, unit: str,
         for tid, box in track_results:
             cx, cy = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
             in_roi = _in_roi(cx, cy, roi)
-            debug_tracks.append({"tid": tid, "cx": cx, "cy": cy, "in_roi": in_roi})
+            conf   = _box_to_conf.get(tuple(int(v) for v in box), None)
+            debug_tracks.append({"tid": tid, "cx": cx, "cy": cy, "in_roi": in_roi, "conf": conf})
             if in_roi:
                 roi_ids.append(tid)
         counted_ids_now = counter.update(roi_ids)
@@ -669,12 +533,11 @@ def run_video(model: YOLO, video_source, unit: str,
             last_detection_time = time.time()
             belt_active         = True
             dynamic_frame_skip  = frame_skip
-            idle_started        = None
         elif time.time() - last_detection_time > IDLE_TIMEOUT_SEC:
-            if not idle_started:
-                idle_started = time.time()
             belt_active        = False
             dynamic_frame_skip = frame_skip * 2   # half the rate during idle
+            if not idle_started:
+                idle_started = time.time()
         else:
             # Hold last status during the short grace window.
             dynamic_frame_skip = frame_skip
@@ -685,6 +548,7 @@ def run_video(model: YOLO, video_source, unit: str,
         # ghost tracks from the previous batch cannot absorb new detections.
         if not prev_belt_active and belt_active:
             tracker.reset()
+            idle_started = None
         prev_belt_active = belt_active
 
         utilization_pct = 0.0
@@ -697,19 +561,6 @@ def run_video(model: YOLO, video_source, unit: str,
         # weekly off-day; otherwise status is always real, and idle time /
         # sessions only accumulate inside shift hours AND outside the break
         # window.
-        _refresh_dynamic_state()
-        db_success = True
-        if not _is_off_today():
-            count_idle = _within_shift() and not _in_break()
-            db_success = FrameProcessor.process_frame(
-                source_note         = db_unit,
-                total_count         = total_count,
-                belt_active         = belt_active,
-                utilization_pct     = utilization_pct,
-                piece_delta         = piece_delta,
-                frame_time_delta_s  = frame_time_delta if count_idle else 0,
-                idle_sessions_delta = new_idle_session if count_idle else 0,
-            )
         new_idle_session = 0
 
         detection_counts.append(count)
@@ -791,7 +642,9 @@ def run_video(model: YOLO, video_source, unit: str,
             cv2.circle(display, (dcx, dcy), 5, dot_color, -1)
             cv2.circle(display, (dcx, dcy), 8, dot_color, 2)
             status   = ("ROI:Y" if in_roi_flag else "ROI:N") + (" NEW" if counted_now else (" COUNTED" if counted else ""))
-            dbg_text = f"ID {tid}  ({int(track['cx'])},{int(track['cy'])})  {status}"
+            _conf    = track.get("conf")
+            _conf_s  = f"  {_conf:.0%}" if _conf is not None else ""
+            dbg_text = f"ID {tid}{_conf_s}  {status}"
             (dtw, dth), _ = cv2.getTextSize(dbg_text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
             tx = max(8, min(dcx + 10, DISPLAY_W - dtw - 8))
             ty = max(dth + 8, min(dcy - 10, DISPLAY_H - 8))
@@ -808,10 +661,10 @@ def run_video(model: YOLO, video_source, unit: str,
             _push_frame(db_unit, display)
 
         key = cv2.waitKey(1) & 0xFF
-        if key == ord("q"):
+        if key in (ord("q"), ord("Q")):
             print("  → Next (Q).")
             break
-        if key == ord("w"):
+        if key in (ord("w"), ord("W")):
             print("  → Back (W).")
             go_back = True
             break
@@ -854,7 +707,6 @@ def _print_video_stats(s: VideoStats) -> None:
     print(f"  Items counted    : {s.items_counted}")
     print(f"  Detection rate   : {s.detection_rate_pct}%")
     print(f"  Inference speed  : {s.avg_fps} FPS  ({s.avg_inference_ms}ms/frame)")
-    print(f"  DB               : Real-time data written to SQL Server")
 
 
 def _aggregate_unit(unit: str, video_stats: list[VideoStats]) -> UnitStats:
@@ -871,6 +723,130 @@ def _aggregate_unit(unit: str, video_stats: list[VideoStats]) -> UnitStats:
     return us
 
 
+# ── Image inference ────────────────────────────────────────────────────────
+
+def run_image(model: YOLO, image_path, unit: str,
+              unit_configs: Optional[dict] = None) -> tuple[VideoStats, bool, bool]:
+    """Run inference on a single image. SPACE/Q=next  W=back  ESC=quit."""
+    name   = Path(str(image_path)).name
+    stats  = VideoStats(unit=unit, filename=name)
+    frame  = cv2.imread(str(image_path))
+    if frame is None:
+        stats.skipped     = True
+        stats.skip_reason = f"Could not read image: {image_path}"
+        return stats, False, False
+
+    frame_h, frame_w = frame.shape[:2]
+    configs           = unit_configs or {}
+    roi, _            = _get_unit_cfg(configs, unit, frame_w, frame_h)
+
+    t0      = time.time()
+    results = model.predict(frame, conf=CONF, iou=0.45, device=DEVICE, verbose=False, show=False)
+    result  = results[0]
+    inf_ms  = result.speed.get("inference", (time.time() - t0) * 1000)
+
+    boxes_xyxy   = result.boxes.xyxy.cpu().numpy().tolist() if result.boxes is not None and len(result.boxes) > 0 else []
+    confs_list   = result.boxes.conf.cpu().numpy().tolist() if result.boxes is not None and len(result.boxes) > 0 else []
+    _box_to_conf = {tuple(int(v) for v in b): c for b, c in zip(boxes_xyxy, confs_list)}
+    tracker      = SimpleIoUTracker(iou_thresh=0.25, max_age=20)
+    counter      = RoiCounter()
+    track_results = _suppress_overlapping_tracks(tracker.update(boxes_xyxy))
+
+    debug_tracks: list[dict] = []
+    roi_ids: list[int] = []
+    for tid, box in track_results:
+        cx, cy = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
+        in_roi = _in_roi(cx, cy, roi)
+        conf   = _box_to_conf.get(tuple(int(v) for v in box), None)
+        debug_tracks.append({"tid": tid, "cx": cx, "cy": cy, "in_roi": in_roi, "conf": conf})
+        if in_roi:
+            roi_ids.append(tid)
+    counted_ids_now = counter.update(roi_ids)
+    count           = len(result.boxes) if result.boxes is not None else 0
+
+    # ── Build display ─────────────────────────────────────────────────────
+    annotated = result.plot(boxes=False)
+    h, w      = annotated.shape[:2]
+    scale     = min(DISPLAY_W / w, DISPLAY_H / h)
+    new_w, new_h = int(w * scale), int(h * scale)
+    resized   = cv2.resize(annotated, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    display   = np.zeros((DISPLAY_H, DISPLAY_W, 3), dtype=np.uint8)
+    x_off     = (DISPLAY_W - new_w) // 2
+    y_off     = (DISPLAY_H - new_h) // 2
+    display[y_off:y_off + new_h, x_off:x_off + new_w] = resized
+    sx        = scale
+
+    # ROI overlay
+    rx1 = int(roi["x"] * sx) + x_off;  ry1 = int(roi["y"] * sx) + y_off
+    rx2 = int((roi["x"] + roi["w"]) * sx) + x_off
+    ry2 = int((roi["y"] + roi["h"]) * sx) + y_off
+    ov  = display.copy()
+    cv2.rectangle(ov, (rx1, ry1), (rx2, ry2), (0, 255, 0), -1)
+    cv2.addWeighted(ov, 0.08, display, 0.92, 0, display)
+    cv2.rectangle(display, (rx1, ry1), (rx2, ry2), (0, 255, 0), 2)
+
+    _f, _fs, _ft, _pad, _ty = cv2.FONT_HERSHEY_SIMPLEX, 0.65, 1, 6, 27
+
+    # Left header: filename
+    (dtw, dth), _ = cv2.getTextSize(name, _f, _fs, _ft)
+    cv2.rectangle(display, (10 - _pad, _ty - dth - _pad), (10 + dtw + _pad, _ty + _pad), (0, 0, 0), -1)
+    cv2.putText(display, name, (10, _ty), _f, _fs, (255, 255, 255), _ft)
+
+    # Right header: unit + counts
+    _seg_u = f"{unit}  detections:{count}  in_roi:{len(roi_ids)}"
+    (uw, _), _ = cv2.getTextSize(_seg_u, _f, _fs, _ft)
+    cv2.rectangle(display, (DISPLAY_W - uw - 10 - _pad, _ty - dth - _pad), (DISPLAY_W - 10 + _pad, _ty + _pad), (0, 0, 0), -1)
+    cv2.putText(display, _seg_u, (DISPLAY_W - uw - 10, _ty), _f, _fs, (255, 255, 255), _ft)
+
+    # Bottom hint
+    hint = "SPACE / Q = next    W = back    ESC = quit"
+    (hw, hh), _ = cv2.getTextSize(hint, _f, 0.5, 1)
+    cv2.rectangle(display, (10 - _pad, DISPLAY_H - hh - 12 - _pad), (10 + hw + _pad, DISPLAY_H - 12 + _pad), (0, 0, 0), -1)
+    cv2.putText(display, hint, (10, DISPLAY_H - 12), _f, 0.5, (180, 180, 180), 1)
+
+    # Track dots
+    for track in debug_tracks:
+        tid, in_roi_f = track["tid"], track["in_roi"]
+        dcx = int(track["cx"] * sx) + x_off
+        dcy = int(track["cy"] * sx) + y_off
+        c_now = tid in counted_ids_now
+        dot   = (255, 255, 0) if c_now else ((0, 255, 0) if in_roi_f else (0, 165, 255))
+        cv2.circle(display, (dcx, dcy), 5, dot, -1)
+        cv2.circle(display, (dcx, dcy), 8, dot, 2)
+        _conf  = track.get("conf")
+        _conf_s = f"  {_conf:.0%}" if _conf is not None else ""
+        lbl  = f"ID {tid}{_conf_s}  ({'ROI:Y' if in_roi_f else 'ROI:N'}){'  NEW' if c_now else ''}"
+        (lw, lh), _ = cv2.getTextSize(lbl, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+        tx = max(8, min(dcx + 10, DISPLAY_W - lw - 8))
+        ty = max(lh + 8, min(dcy - 10, DISPLAY_H - 8))
+        cv2.rectangle(display, (tx - 3, ty - lh - 3), (tx + lw + 3, ty + 3), (0, 0, 0), -1)
+        cv2.putText(display, lbl, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.45, dot, 1)
+
+    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+    cv2.imshow(WINDOW_NAME, display)
+    print(f"  {name}  |  detections={count}  in_roi={len(roi_ids)}  inf={inf_ms:.0f}ms  |  SPACE/Q=next  W=back  ESC=quit")
+
+    stats.frames_processed   = 1
+    stats.total_detections   = count
+    stats.frames_with_detections = 1 if count > 0 else 0
+    stats.items_counted      = counter.total
+    stats.avg_inference_ms   = round(inf_ms, 2)
+
+    aborted = go_back = False
+    while True:
+        key = cv2.waitKey(0) & 0xFF
+        if key in (ord("q"), ord(" "), 13):   # Q / Space / Enter → next
+            break
+        if key == ord("w"):
+            go_back = True
+            break
+        if key == 27:
+            aborted = True
+            break
+
+    return stats, aborted, go_back
+
+
 # ── Modes ──────────────────────────────────────────────────────────────────
 
 def run_single(model: YOLO, record: bool = False, unit: Optional[str] = None,
@@ -878,57 +854,58 @@ def run_single(model: YOLO, record: bool = False, unit: Optional[str] = None,
     unit_configs = _load_unit_configs()
 
     if unit is None:
-        # No unit specified — try first available video in videos/
-        videos = sorted(VIDEOS_DIR.glob("**/*.mp4")) if VIDEOS_DIR.is_dir() else []
-        if not videos:
+        # No unit specified — collect everything from videos/
+        unit    = "preview"
+        src_dir = VIDEOS_DIR
+        videos  = sorted(src_dir.glob("**/*.mp4")) if src_dir.is_dir() else []
+        images  = sorted(f for ext in IMAGE_EXTS for f in src_dir.glob(f"**/*{ext}")) if src_dir.is_dir() else []
+        sources = sorted(set(videos + images), key=lambda x: x.name)
+        if not sources:
             raise FileNotFoundError(
-                "No --unit specified and no videos found in videos/. "
-                "Either pass --unit SP-XX or place an .mp4 in the videos/ folder."
+                "No --unit specified and no videos/images found in videos/. "
+                "Either pass --unit SP-XX or place files in the videos/ folder."
             )
-        unit   = "preview"
-        source = videos[0]
-        print(f"Video: {source.name}  |  Unit: preview  |  Press Q to skip")
     else:
         cfg_source = _get_unit_source(unit_configs, unit)
         if cfg_source:
             sources = _resolve_sources(cfg_source)
         else:
             folder  = VIDEOS_DIR / unit
-            sources = sorted(folder.glob("*.mp4")) if folder.is_dir() else []
+            sources = _resolve_sources(str(folder)) if folder.is_dir() else []
 
         if not sources:
             raise FileNotFoundError(
                 f"No source for {unit}. Set unit_configs.json[\"{unit}\"][\"source\"] "
-                f"to an RTSP URL, a video file, or a folder containing .mp4 files."
+                f"to an RTSP URL, a video/image file, or a folder."
             )
 
-        # One continuous recording for the whole session — spans every video
-        # for this unit and is only saved when the user quits (ESC) or all
-        # sources finish. Prevents per-video files overwriting each other.
-        session_writer   = None
-        session_rec_path = None
-        if record:
-            REC_DIR.mkdir(parents=True, exist_ok=True)
-            ts               = time.strftime("%Y%m%d_%H%M%S")
-            session_rec_path = REC_DIR / f"{unit}_session_{ts}.mp4"
-            session_writer   = cv2.VideoWriter(str(session_rec_path), cv2.VideoWriter_fourcc(*"mp4v"), REC_FPS, (DISPLAY_W, DISPLAY_H))
-            print(f"  Recording (whole session) → {session_rec_path.name}")
+    session_writer   = None
+    session_rec_path = None
+    if record:
+        REC_DIR.mkdir(parents=True, exist_ok=True)
+        ts               = time.strftime("%Y%m%d_%H%M%S")
+        session_rec_path = REC_DIR / f"{unit}_session_{ts}.mp4"
+        session_writer   = cv2.VideoWriter(str(session_rec_path), cv2.VideoWriter_fourcc(*"mp4v"), REC_FPS, (DISPLAY_W, DISPLAY_H))
+        print(f"  Recording (whole session) → {session_rec_path.name}")
 
-        i = 0
-        while i < len(sources):
-            source = sources[i]
-            label  = str(source) if _is_stream_url(str(source)) else Path(str(source)).name
-            print(f"Source: {label}  |  Unit: {unit} → {UNIT_MAP.get(unit, unit)}  |  Q=next  W=back  ESC=quit")
-            _, aborted, go_back = run_video(model, source, unit=unit, record=record,
+    i = 0
+    while i < len(sources):
+        src   = sources[i]
+        label = str(src) if _is_stream_url(str(src)) else Path(str(src)).name
+        print(f"Source: {label}  |  Unit: {unit}  |  Q/SPACE=next  W=back  ESC=quit")
+        if _is_image(src):
+            _, aborted, go_back = run_image(model, src, unit=unit, unit_configs=unit_configs)
+        else:
+            _, aborted, go_back = run_video(model, src, unit=unit, record=record,
                                             unit_configs=unit_configs, max_seconds=max_seconds,
                                             writer=session_writer)
-            if aborted:
-                break
-            i = max(0, i - 1) if go_back else i + 1
+        if aborted:
+            break
+        i = max(0, i - 1) if go_back else i + 1
 
-        if session_writer:
-            session_writer.release()
-            print(f"  Saved session recording → {session_rec_path}")
+    if session_writer:
+        session_writer.release()
+        print(f"  Saved session recording → {session_rec_path}")
 
     cv2.destroyAllWindows()
 
@@ -983,10 +960,13 @@ def run_all(model: YOLO, max_seconds: Optional[float], record: bool = False) -> 
             print(f"\n{'━'*60}\n  {unit}  —  {src_label}\n{'━'*60}")
             current_unit = unit
 
-        vstats, aborted, go_back = run_video(
-            model, src, unit, max_seconds=max_seconds,
-            record=record, unit_configs=unit_configs
-        )
+        if _is_image(src):
+            vstats, aborted, go_back = run_image(model, src, unit, unit_configs=unit_configs)
+        else:
+            vstats, aborted, go_back = run_video(
+                model, src, unit, max_seconds=max_seconds,
+                record=record, unit_configs=unit_configs
+            )
         all_video_stats.append(vstats)
 
         if aborted:
@@ -1084,15 +1064,6 @@ def main() -> None:
     model       = YOLO(str(model_path))
     model.to(DEVICE)   # move weights to GPU once at load time
     cap_seconds = args.max_seconds if args.max_seconds and args.max_seconds > 0 else None
-
-    # Load shift + break times once, and freeze the holiday-today flag for
-    # the rest of the run (matches run_all_plants.py behavior).
-    _load_settings_once()
-    print(f"[shift]    Counting idle/downtime between {_shift_start} – {_shift_end}")
-    print(f"[break]    Weekday {_break_start_weekday}-{_break_end_weekday} | "
-          f"Friday {_break_start_friday}-{_break_end_friday} (excluded from idle)")
-    _check_holiday_at_startup()
-    _check_weekly_off_at_startup()
 
     if args.all:
         run_all(model, max_seconds=cap_seconds, record=args.record)

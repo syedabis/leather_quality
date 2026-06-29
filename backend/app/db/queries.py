@@ -638,6 +638,31 @@ def _fmt_duration(seconds: int) -> str:
     return f"{h:02d}h {m:02d}m {sec:02d}s"
 
 
+def _calc_overtime(s_start: datetime, s_end: datetime,
+                   shift_start: datetime, shift_end: datetime) -> tuple[int, str | None]:
+    """Returns (overtime_seconds, label) for portions of a session outside shift hours.
+
+    Pre-shift  : session started before shift_start
+    Post-shift : session ended   after  shift_end
+    Both can apply (e.g. night-shift spanning midnight) — label uses ' + ' separator.
+    """
+    overtime_s = 0
+    parts: list[str] = []
+    if s_start < shift_start:
+        ot_e = min(s_end, shift_start)
+        seg  = int((ot_e - s_start).total_seconds())
+        if seg > 0:
+            overtime_s += seg
+            parts.append(f"{s_start.strftime('%H:%M')} → {ot_e.strftime('%H:%M')}")
+    if s_end > shift_end:
+        ot_s = max(s_start, shift_end)
+        seg  = int((s_end - ot_s).total_seconds())
+        if seg > 0:
+            overtime_s += seg
+            parts.append(f"{ot_s.strftime('%H:%M')} → {s_end.strftime('%H:%M')}")
+    return overtime_s, (" + ".join(parts) if parts else None)
+
+
 def _merge_intervals(intervals: list[tuple]) -> list[tuple]:
     """Merge overlapping (start_dt, end_dt) intervals so they aren't double-counted.
 
@@ -897,12 +922,16 @@ def _batch_session_metrics(
                             idle_s += _dd
 
                 if i < len(sessions) - 1:
-                    for kind, seg_a, seg_b in _split_gap(s["end_time"], sessions[i + 1]["start_time"], eff_break):
-                        seg = int((seg_b - seg_a).total_seconds())
-                        if kind == "break":
-                            break_s += seg
-                        elif seg > 60:
-                            idle_s += seg
+                    # Clip inter-session gap to shift hours — idle outside shift not counted
+                    _gap_s = max(s["end_time"], shift_start_dt)
+                    _gap_e = min(sessions[i + 1]["start_time"], shift_end_dt)
+                    if _gap_e > _gap_s:
+                        for kind, seg_a, seg_b in _split_gap(_gap_s, _gap_e, eff_break):
+                            seg = int((seg_b - seg_a).total_seconds())
+                            if kind == "break":
+                                break_s += seg
+                            elif seg > 60:
+                                idle_s += seg
 
             if sessions and shift_end_dt > sessions[-1]["end_time"]:
                 for kind, seg_a, seg_b in _split_gap(sessions[-1]["end_time"], shift_end_dt, eff_break):
@@ -997,8 +1026,9 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
     sh, sm = map(int, shift_start_str.split(":"))
     eh, em = map(int, shift_end_str.split(":"))
     report_d = datetime.fromisoformat(report_date).date()
-    shift_start_dt = datetime(report_d.year, report_d.month, report_d.day, sh, sm)
-    shift_end_dt   = datetime(report_d.year, report_d.month, report_d.day, eh, em)
+    shift_start_dt      = datetime(report_d.year, report_d.month, report_d.day, sh, sm)
+    shift_end_dt        = datetime(report_d.year, report_d.month, report_d.day, eh, em)
+    _shift_end_original = shift_end_dt   # uncapped — used for overtime boundary
 
     now = datetime.now()
     if report_d == now.date():
@@ -1054,11 +1084,12 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
         sessions         = by_plant.get(plant_id, [])
         eff_break        = _effective_break_window(report_d, sessions)
         _plant_idle_ivs  = _merge_intervals(_idle_by_plant.get(plant_id, []))
-        rows_out  = []
-        run_s   = 0
-        idle_s  = 0
-        break_s = 0
-        pieces  = 0
+        rows_out    = []
+        run_s       = 0
+        idle_s      = 0
+        break_s     = 0
+        overtime_s  = 0
+        pieces      = 0
 
         # ── Absorb mode sessions that fall entirely within the break window ──
         # They become nested sub-rows inside the BREAK TIME row instead of
@@ -1123,6 +1154,9 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
                     _stype.replace("_", " ") if _stype in _MODE_TYPES
                     else (s["lot_no"] or "UNACCOUNTED")
                 )
+                _ot_s, _ot_label = _calc_overtime(
+                    s["start_time"], s["end_time"], shift_start_dt, _shift_end_original)
+                overtime_s += _ot_s
                 rows_out.append({
                     "row_type":       "session",
                     "lot_no":         _label,
@@ -1136,6 +1170,8 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
                     "start_time":     s["start_time"].strftime("%H:%M"),
                     "end_time":       s["end_time"].strftime("%H:%M"),
                     "duration_label": _fmt_duration(dur_s),
+                    "overtime_s":     _ot_s,
+                    "overtime_label": _ot_label,
                 })
 
                 # Within-session idle — accumulate into a field on the session row
@@ -1164,10 +1200,14 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
                     rows_out[-1]["idle_within_label"] = _fmt_duration(_within_idle_s)
 
                 if i < len(_main_sessions) - 1:
-                    add_idle, add_break = _emit_gap_rows(
-                        s["end_time"], _main_sessions[i + 1]["start_time"], eff_break, rows_out, _sub)
-                    idle_s  += add_idle
-                    break_s += add_break
+                    # Clip inter-session gap to shift hours — idle outside shift not shown/counted
+                    _gap_s = max(s["end_time"], shift_start_dt)
+                    _gap_e = min(_main_sessions[i + 1]["start_time"], shift_end_dt)
+                    if _gap_e > _gap_s:
+                        add_idle, add_break = _emit_gap_rows(
+                            _gap_s, _gap_e, eff_break, rows_out, _sub)
+                        idle_s  += add_idle
+                        break_s += add_break
 
             if _main_sessions and shift_end_dt > _main_sessions[-1]["end_time"]:
                 # Skip trailing idle when the plant is currently running a session —
@@ -1189,6 +1229,8 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
                 "run_label":       _fmt_duration(run_s),
                 "idle_label":      _fmt_duration(idle_s),
                 "break_label":     _fmt_duration(break_s),
+                "overtime_s":      overtime_s,
+                "overtime_label":  _fmt_duration(overtime_s) if overtime_s > 0 else None,
                 "run_time_min":    round(run_s   / 60),
                 "idle_time_min":   round(idle_s  / 60),
                 "break_time_min":  round(break_s / 60),
