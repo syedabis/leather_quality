@@ -923,6 +923,20 @@ def main() -> None:
 
     print("All 6 workers started. Press ESC in any window to stop.\n")
 
+    def _reposition_windows() -> None:
+        """Re-apply grid positions and sizes — called after first frames arrive."""
+        for i, unit in enumerate(UNITS):
+            row = i // GRID_COLS
+            col = i % GRID_COLS
+            x   = col * (DISPLAY_W + WINDOW_GAP)
+            y   = row * (DISPLAY_H + WINDOW_GAP)
+            cv2.resizeWindow(unit, DISPLAY_W, DISPLAY_H)
+            cv2.moveWindow(unit, x, y)
+            cv2.waitKey(1)
+
+    _repositioned   = False
+    _frames_seen    = 0             # count total frames shown; reposition after first batch
+
     try:
         # Main display loop — must run on main thread (Windows cv2 requirement)
         while not stop_event.is_set():
@@ -930,8 +944,14 @@ def main() -> None:
                 try:
                     frame = frame_queues[unit].get_nowait()
                     cv2.imshow(unit, frame)
+                    _frames_seen += 1
                 except queue.Empty:
                     pass
+
+            # Reposition once after all 6 windows have received at least one frame
+            if not _repositioned and _frames_seen >= len(UNITS):
+                _reposition_windows()
+                _repositioned = True
 
             key = cv2.waitKey(1) & 0xFF
             if key == 27:   # ESC
@@ -966,4 +986,38 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    import traceback
+
+    # ── File logging — survives terminal close ─────────────────────────────
+    _log_dir = Path(__file__).resolve().parent / "logs"
+    _log_dir.mkdir(exist_ok=True)
+    _log_path = _log_dir / f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+    class _Tee:
+        """Write to both the real stdout/stderr and a log file simultaneously."""
+        def __init__(self, real, f):
+            self._real = real
+            self._f    = f
+        def write(self, msg):
+            self._real.write(msg)
+            self._f.write(msg)
+            self._f.flush()
+        def flush(self):
+            self._real.flush()
+            self._f.flush()
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    _log_f      = open(_log_path, "w", encoding="utf-8")
+    sys.stdout  = _Tee(sys.__stdout__, _log_f)
+    sys.stderr  = _Tee(sys.__stderr__, _log_f)
+
+    print(f"[log] Writing to {_log_path}")
+    try:
+        main()
+    except Exception:
+        traceback.print_exc()
+    finally:
+        print("[log] Process exited.")
+        _log_f.close()

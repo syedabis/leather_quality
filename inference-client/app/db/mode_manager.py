@@ -23,14 +23,14 @@ from typing import Optional
 from app.db.connection import get_connection
 
 # ── Tuning (defaults — overridden from DB at startup via load_settings) ────────
-SHAPE_CONF_THRESHOLD   = 0.75   # min YOLO confidence to count a shape hit
+SHAPE_CONF_THRESHOLD   = 0.89   # min YOLO confidence to count a shape hit
 SHAPE_CONSECUTIVE_HITS = 5      # consecutive checks before mode fires (~15 s at 5 FPS)
 SHAPE_COOLDOWN_S       = 15     # seconds to ignore shapes after a mode change
 SHAPE_CHECK_EVERY_N    = 15     # run shape model every N processed frames (~3 s at 5 FPS)
 
 WASHING_IDLE_TIMEOUT_S = 1200   # 20 min idle → auto-end WASHING
 COLOR_BURST_COUNT      = 10     # pieces in burst window → auto-end COLOR_MATCHING
-COLOR_BURST_WINDOW_S   = 35     # rolling burst window in seconds
+COLOR_BURST_WINDOW_S   = 50     # rolling burst window in seconds
 
 # Shape name (as reported by YOLO model) → mode string (None = "end mode")
 SHAPE_TO_MODE: dict[str, Optional[str]] = {
@@ -116,12 +116,19 @@ class ModeManager:
         Called every SHAPE_CHECK_EVERY_N frames with the best YOLO shape detection.
         Manages the consecutive-hit buffer and fires mode transitions.
         """
-        # ── Active-mode gate: once a mode is running, only Arrow (→ MAINTENANCE end) passes ──
+        # ── Active-mode gate ─────────────────────────────────────────────────────
+        # NORMAL       → all shapes pass
+        # MAINTENANCE  → only Arrow passes (ends maintenance)
+        # WASHING      → only Plus passes (transitions to COLOR_MATCHING)
+        # COLOR_MATCHING / anything else → nothing passes
         with self._lock:
             current_mode = (self._states.get(plant) or _DUMMY).mode
         if current_mode != "NORMAL":
-            _is_arrow = shape_name is not None and shape_name.lower() == "arrow"
-            if not (_is_arrow and current_mode == "MAINTENANCE"):
+            _is_arrow        = shape_name is not None and shape_name.lower() == "arrow"
+            _is_plus         = shape_name is not None and shape_name.lower() == "plus"
+            _arrow_ends_maint = _is_arrow and current_mode == "MAINTENANCE"
+            _plus_ends_wash   = _is_plus  and current_mode == "WASHING"
+            if not (_arrow_ends_maint or _plus_ends_wash):
                 self._hits.pop(plant, None)
                 return
 
@@ -145,11 +152,12 @@ class ModeManager:
             hits.clear()
             return
 
-        # ── Arrow only fires when plant is in MAINTENANCE ─────────────────────
-        is_arrow = (shape_name.lower() == "arrow")
+        # ── Trigger guards ────────────────────────────────────────────────────
+        is_arrow          = (shape_name.lower() == "arrow")
+        is_wash_to_color  = (current_mode == "WASHING" and shape_name.lower() == "plus")
 
-        if not is_arrow:
-            # Non-arrow shapes only fire when plant is idle / has no active session
+        if not is_arrow and not is_wash_to_color:
+            # Normal shapes only fire when plant is idle / has no active session
             can_trigger = (not has_production_session) or (not belt_active)
             if not can_trigger:
                 hits.clear()
@@ -344,6 +352,19 @@ class ModeManager:
                 conn.commit()
         except Exception:
             pass
+
+    def force_end_mode(self, plant: str) -> None:
+        """
+        End WASHING or COLOR_MATCHING immediately when an accounted production
+        session starts.  MAINTENANCE is excluded — it requires an explicit Arrow.
+        """
+        with self._lock:
+            state = self._states.get(plant)
+            if state is None or state.mode not in ("WASHING", "COLOR_MATCHING"):
+                return
+            del self._states[plant]
+        self._end_session_db(state, datetime.now())
+        print(f"[ModeManager] {plant} {state.mode} ended — accounted session started")
 
     def end_all_active_modes(self) -> None:
         """Graceful shutdown — close any open mode sessions with accurate EndTime."""

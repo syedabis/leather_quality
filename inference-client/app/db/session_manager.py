@@ -14,11 +14,12 @@ from datetime import datetime
 from typing import Optional
 
 from app.db.connection import get_connection
+from app.db.mode_manager import mode_manager
 
 # ── Tuning constants ───────────────────────────────────────────────────────
 POLL_INTERVAL_S             = 5     # how often to poll AppSessions
 CONSECUTIVE_FOR_UNACCOUNTED = 10    # pieces needed within BURST_WINDOW_S to auto-open unaccounted session
-BURST_WINDOW_S              = 40    # sliding window (s) — pieces older than this are dropped from buffer
+BURST_WINDOW_S              = 50    # sliding window (s) — pieces older than this are dropped from buffer
 ACCOUNTED_GRACE_S           = 180   # TESTING: 3 min silence → end accounted session (normally 600 = 10 min)
 UNACCOUNTED_IDLE_S          = 180   # TESTING: 3 min silence → end unaccounted session (normally 900 = 15 min)
 TIMER_CHECK_INTERVAL_S      = 30    # how often to check timers
@@ -341,6 +342,8 @@ class SessionManager:
                 mem = self._state.get(plant)
 
                 if mem is None:
+                    # If WASHING/COLOR_MATCHING is running, end it before production starts
+                    mode_manager.force_end_mode(plant)
                     # New accounted session from mobile — start tracking
                     self._state[plant] = self._make_accounted_state(plant, db_row)
 
