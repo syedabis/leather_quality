@@ -144,6 +144,11 @@ class ModeManager:
             hits.clear()
             return
 
+        # ── Unknown shape class — ignore (e.g. leather, background) ────────────
+        if shape_name.lower() not in SHAPE_TO_MODE:
+            hits.clear()
+            return
+
         # ── Shape must be alone in the ROI ────────────────────────────────────
         # Reject the hit if other objects (leather pieces) are also present.
         # roi_ids already has the shape card suppressed, so this only fires

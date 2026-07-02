@@ -552,6 +552,13 @@ def _plant_worker(
 
         if not cap.isOpened():
             print(f"[{unit}] Could not open source: {source}")
+            if is_stream:
+                # Network still down — keep retrying with the same backoff
+                if not stop_event.is_set():
+                    print(f"[{unit}] Retrying in {reconnect_delay}s...")
+                    time.sleep(reconnect_delay)
+                    reconnect_delay = min(reconnect_delay * 2, 30)
+                continue
             src_index += 1
             continue
 
