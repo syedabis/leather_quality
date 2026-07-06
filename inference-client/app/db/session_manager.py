@@ -353,13 +353,21 @@ class SessionManager:
                         states_to_end.append(mem)
                         self._state[plant] = self._make_accounted_state(plant, db_row)
                     else:
-                        # Same session — refresh metadata from DB
+                        # Same session — refresh metadata from DB (including lot_no in case mobile updated it)
+                        mem.lot_no          = db_row["lot_no"]
                         mem.expected_pieces = db_row["expected_pieces"]
                         mem.order_no        = db_row["order_no"]
                         mem.article_name    = db_row["article_name"]
                         mem.colour_name     = db_row["colour_name"]
                         mem.party_name      = db_row["party_name"]
                         mem.pk_code         = db_row["pk_code"]
+
+            # Fix: detect accounted sessions ended by mobile (no longer INPROCESS in DB)
+            for plant, mem in list(self._state.items()):
+                if mem is not None and mem.session_type == 'accounted' and plant not in db_by_plant:
+                    states_to_end.append(mem)
+                    del self._state[plant]
+                    print(f"[SessionManager] {plant} accounted session {mem.session_id} ended by mobile — removing from memory")
 
             # Collect heartbeat updates for all active sessions with a real session_id
             for plant, mem in self._state.items():

@@ -59,7 +59,7 @@ VIDEOS_DIR  = BASE / "videos"
 CFG_FILE    = BASE / "unit_configs.json"
 
 # ── Inference config ───────────────────────────────────────────────────────
-TARGET_FPS       = 5
+TARGET_FPS       = 2
 CONF             = 0.85
 IDLE_TIMEOUT_SEC        = 30   # default — overridden at startup from DB SystemSettings
 DOWNTIME_THRESHOLD_SEC  = 300  # default — overridden at startup from DB SystemSettings
@@ -691,19 +691,24 @@ def _plant_worker(
                     )[0]
                 _sname, _sconf = None, 0.0
                 if _sr.boxes is not None and len(_sr.boxes) > 0:
+                    _boxes  = _sr.boxes.xyxy.cpu().numpy()
                     _confs  = _sr.boxes.conf.cpu().numpy()
-                    _bi     = int(_confs.argmax())
-                    _box    = _sr.boxes.xyxy.cpu().numpy()[_bi]
-                    _scx    = (_box[0] + _box[2]) / 2.0
-                    _scy    = (_box[1] + _box[3]) / 2.0
-                    _raw_name = shape_model.names[int(_sr.boxes.cls.cpu().numpy()[_bi])]
-                    _raw_conf = float(_confs[_bi])
-                    if _in_roi(_scx, _scy, roi):
-                        _sname = _raw_name
-                        _sconf = _raw_conf
-                        if _sconf >= 0.75:
-                            _last_shape_box    = _box.tolist()
-                            _shape_box_expiry  = frame_num + SHAPE_CHECK_EVERY_N * 2
+                    _clses  = _sr.boxes.cls.cpu().numpy()
+                    _VALID  = {"arrow", "plus", "star", "triangle"}
+                    for _bi in range(len(_boxes)):
+                        _candidate = shape_model.names[int(_clses[_bi])].lower()
+                        if _candidate not in _VALID:
+                            continue   # ignore leather, card, anything else
+                        _box  = _boxes[_bi]
+                        _scx  = (_box[0] + _box[2]) / 2.0
+                        _scy  = (_box[1] + _box[3]) / 2.0
+                        if _in_roi(_scx, _scy, roi):
+                            _sname = shape_model.names[int(_clses[_bi])]
+                            _sconf = float(_confs[_bi])
+                            if _sconf >= 0.75:
+                                _last_shape_box   = _box.tolist()
+                                _shape_box_expiry = frame_num + SHAPE_CHECK_EVERY_N * 2
+                            break   # first valid shape in ROI wins
                 # pieces_in_roi: are there real pieces in the ROI right now,
                 # EXCLUDING the shape card itself?
                 # Re-check track_results against the freshly-updated shape bbox

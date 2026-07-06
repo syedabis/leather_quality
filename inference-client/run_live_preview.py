@@ -53,7 +53,7 @@ DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 # ── Paths ──────────────────────────────────────────────────────────────────
 BASE        = Path(__file__).parent
 MODEL       = BASE / "yolov8s_seg_best.pt"
-VIDEOS_DIR  = BASE / "videos"          # fallback local video files (optional)
+VIDEOS_DIR  = BASE / "videos2"          # fallback local video files (optional)
 CFG_FILE    = BASE / "unit_configs.json"
 TRACKER_CFG = BASE / "bytetrack_conveyor.yaml"
 OUT_DIR     = BASE / "results"
@@ -400,7 +400,8 @@ def run_video(model: YOLO, video_source, unit: str,
               record: bool = False,
               unit_configs: Optional[dict] = None,
               display_name: Optional[str] = None,
-              writer: Optional["cv2.VideoWriter"] = None) -> tuple[VideoStats, bool, bool]:
+              writer: Optional["cv2.VideoWriter"] = None,
+              rec_path_override: Optional[Path] = None) -> tuple[VideoStats, bool, bool]:
 
     is_stream = isinstance(video_source, str) and _is_stream_url(video_source)
     cap_arg   = video_source if is_stream else str(video_source)
@@ -444,8 +445,7 @@ def run_video(model: YOLO, video_source, unit: str,
     rec_path   = None
     if record and writer is None:
         REC_DIR.mkdir(parents=True, exist_ok=True)
-        safe_name = Path(name).stem.replace(" ", "_") or unit
-        rec_path  = REC_DIR / f"{unit}_{safe_name}.mp4"
+        rec_path  = rec_path_override or (REC_DIR / f"{unit}.mp4")
         writer    = cv2.VideoWriter(str(rec_path), cv2.VideoWriter_fourcc(*"mp4v"), REC_FPS, (DISPLAY_W, DISPLAY_H))
         own_writer = True
         print(f"  Recording → {rec_path.name}")
@@ -668,7 +668,7 @@ def run_video(model: YOLO, video_source, unit: str,
             print("  → Back (W).")
             go_back = True
             break
-        if key == 27:
+        if key == 27 or key == 3:   # ESC or Ctrl+C
             print("  → Aborted by user (ESC).")
             aborted = True
             break
@@ -866,27 +866,19 @@ def run_single(model: YOLO, record: bool = False, unit: Optional[str] = None,
                 "Either pass --unit SP-XX or place files in the videos/ folder."
             )
     else:
-        cfg_source = _get_unit_source(unit_configs, unit)
-        if cfg_source:
-            sources = _resolve_sources(cfg_source)
-        else:
-            folder  = VIDEOS_DIR / unit
-            sources = _resolve_sources(str(folder)) if folder.is_dir() else []
+        folder  = VIDEOS_DIR / unit
+        sources = _resolve_sources(str(folder)) if folder.is_dir() else []
 
         if not sources:
             raise FileNotFoundError(
-                f"No source for {unit}. Set unit_configs.json[\"{unit}\"][\"source\"] "
-                f"to an RTSP URL, a video/image file, or a folder."
+                f"No videos found for {unit} in {folder}. "
+                f"Place .mp4 files in inference-client/videos2/{unit}/"
             )
 
-    session_writer   = None
-    session_rec_path = None
+    # Pre-compute one recording path per source so each video gets its own file
     if record:
         REC_DIR.mkdir(parents=True, exist_ok=True)
-        ts               = time.strftime("%Y%m%d_%H%M%S")
-        session_rec_path = REC_DIR / f"{unit}_session_{ts}.mp4"
-        session_writer   = cv2.VideoWriter(str(session_rec_path), cv2.VideoWriter_fourcc(*"mp4v"), REC_FPS, (DISPLAY_W, DISPLAY_H))
-        print(f"  Recording (whole session) → {session_rec_path.name}")
+    rec_paths = [REC_DIR / f"{unit} ({idx+1}).mp4" for idx in range(len(sources))]
 
     i = 0
     while i < len(sources):
@@ -898,16 +890,13 @@ def run_single(model: YOLO, record: bool = False, unit: Optional[str] = None,
         else:
             _, aborted, go_back = run_video(model, src, unit=unit, record=record,
                                             unit_configs=unit_configs, max_seconds=max_seconds,
-                                            writer=session_writer)
+                                            rec_path_override=rec_paths[i])
         if aborted:
             break
         i = max(0, i - 1) if go_back else i + 1
 
-    if session_writer:
-        session_writer.release()
-        print(f"  Saved session recording → {session_rec_path}")
-
     cv2.destroyAllWindows()
+    cv2.waitKey(1)
 
 
 def run_all(model: YOLO, max_seconds: Optional[float], record: bool = False) -> None:
@@ -927,14 +916,10 @@ def run_all(model: YOLO, max_seconds: Optional[float], record: bool = False) -> 
     # freely across all units and all their videos in sequence.
     all_items: list[tuple[str, any]] = []
     for unit in UNITS:
-        cfg_source = _get_unit_source(unit_configs, unit)
-        if cfg_source:
-            sources: list = _resolve_sources(cfg_source)
-        else:
-            folder  = VIDEOS_DIR / unit
-            sources = sorted(folder.glob("*.mp4")) if folder.is_dir() else []
+        folder  = VIDEOS_DIR / unit
+        sources = _resolve_sources(str(folder)) if folder.is_dir() else []
         if not sources:
-            print(f"\n[{unit}] No source configured and no videos in videos/{unit}/ — skipping.")
+            print(f"\n[{unit}] No videos found in videos2/{unit}/ — skipping.")
             continue
         for src in sources:
             all_items.append((unit, src))
@@ -943,6 +928,15 @@ def run_all(model: YOLO, max_seconds: Optional[float], record: bool = False) -> 
         print("  No sources found for any unit.")
         cv2.destroyAllWindows()
         return
+
+    # Pre-compute per-unit indexed recording paths: SP-01 (1).mp4, SP-01 (2).mp4 …
+    if record:
+        REC_DIR.mkdir(parents=True, exist_ok=True)
+    unit_counters: dict[str, int] = {}
+    item_rec_paths: list[Path] = []
+    for u, _ in all_items:
+        unit_counters[u] = unit_counters.get(u, 0) + 1
+        item_rec_paths.append(REC_DIR / f"{u} ({unit_counters[u]}).mp4")
 
     all_video_stats: list[VideoStats] = []
     run_aborted  = False
@@ -965,7 +959,8 @@ def run_all(model: YOLO, max_seconds: Optional[float], record: bool = False) -> 
         else:
             vstats, aborted, go_back = run_video(
                 model, src, unit, max_seconds=max_seconds,
-                record=record, unit_configs=unit_configs
+                record=record, unit_configs=unit_configs,
+                rec_path_override=item_rec_paths[i],
             )
         all_video_stats.append(vstats)
 
@@ -993,6 +988,7 @@ def run_all(model: YOLO, max_seconds: Optional[float], record: bool = False) -> 
             i = next_i
 
     cv2.destroyAllWindows()
+    cv2.waitKey(1)
 
     valid_all              = [v for v in all_video_stats if not v.skipped and v.frames_processed > 0]
     total_frames_processed = sum(v.frames_processed for v in valid_all)
