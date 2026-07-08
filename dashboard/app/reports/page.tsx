@@ -38,7 +38,6 @@ interface DetailRow {
   session_type?: string;
   start_time: string; end_time: string; duration_label: string; label?: string;
   idle_within_label?: string; active_label?: string;
-  overtime_label?: string | null; overtime_s?: number;
   sub_rows?: DetailSubRow[];
 }
 interface DetailPlant {
@@ -322,7 +321,7 @@ function DailyDetailTab() {
               <table className="min-w-max w-full text-xs">
                 <thead className="bg-gray-50 dark:bg-[#1a1a1a]">
                   <tr>
-                    {['Lot No','Order No','Party Name','Article','Colour','PCS','Plant','Start','End','Duration','Active Time','Session Idle','Overtime'].map(h=><Th key={h}>{h}</Th>)}
+                    {['Lot No','Order No','Party Name','Article','Colour','PCS','Plant','Start','End','Duration','Active Time','Session Idle'].map(h=><Th key={h}>{h}</Th>)}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-white/5">
@@ -353,11 +352,6 @@ function DailyDetailTab() {
                         <Td className="text-amber-600 dark:text-amber-400 font-medium">
                           {row.idle_within_label ?? '—'}
                         </Td>
-                        <Td className="text-orange-600 dark:text-orange-400 font-medium">
-                          {row.overtime_label
-                            ? <span className="inline-flex items-center gap-1"><span className="text-orange-500">⏱</span>{row.overtime_label}</span>
-                            : '—'}
-                        </Td>
                       </tr>
                     ) : row.row_type === 'break' ? (
                       <>
@@ -367,7 +361,7 @@ function DailyDetailTab() {
                           <Td className="text-purple-700 dark:text-purple-400">{row.start_time}</Td>
                           <Td className="text-purple-700 dark:text-purple-400">{row.end_time}</Td>
                           <Td className="text-purple-700 dark:text-purple-400">{row.duration_label}</Td>
-                          <Td /><Td /><Td />
+                          <Td /><Td />
                         </tr>
                         {row.sub_rows?.map((sr, sri) => (
                           <tr key={`${ri}-sub-${sri}`} className="bg-purple-50/60 dark:bg-purple-900/5 border-l-4 border-purple-400 dark:border-purple-600">
@@ -397,7 +391,7 @@ function DailyDetailTab() {
                         <Td className="text-amber-700 dark:text-amber-400">{row.start_time}</Td>
                         <Td className="text-amber-700 dark:text-amber-400">{row.end_time}</Td>
                         <Td className="text-amber-700 dark:text-amber-400">{row.duration_label}</Td>
-                        <Td /><Td /><Td />
+                        <Td /><Td />
                       </tr>
                     )
                   )}

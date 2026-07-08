@@ -1154,9 +1154,10 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
                     _stype.replace("_", " ") if _stype in _MODE_TYPES
                     else (s["lot_no"] or "UNACCOUNTED")
                 )
-                _ot_s, _ot_label = _calc_overtime(
+                _ot_s, _ = _calc_overtime(
                     s["start_time"], s["end_time"], shift_start_dt, _shift_end_original)
                 overtime_s += _ot_s
+                run_s      -= _ot_s   # overtime is not part of shift run time
                 rows_out.append({
                     "row_type":       "session",
                     "lot_no":         _label,
@@ -1170,8 +1171,6 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
                     "start_time":     s["start_time"].strftime("%H:%M"),
                     "end_time":       s["end_time"].strftime("%H:%M"),
                     "duration_label": _fmt_duration(dur_s),
-                    "overtime_s":     _ot_s,
-                    "overtime_label": _ot_label,
                 })
 
                 # Within-session idle — accumulate into a field on the session row

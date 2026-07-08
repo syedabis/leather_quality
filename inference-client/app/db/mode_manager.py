@@ -117,18 +117,26 @@ class ModeManager:
         Manages the consecutive-hit buffer and fires mode transitions.
         """
         # ── Active-mode gate ─────────────────────────────────────────────────────
-        # NORMAL       → all shapes pass
-        # MAINTENANCE  → only Arrow passes (ends maintenance)
-        # WASHING      → only Plus passes (transitions to COLOR_MATCHING)
-        # COLOR_MATCHING / anything else → nothing passes
+        # NORMAL         → all shapes pass
+        # MAINTENANCE    → only Arrow passes (ends maintenance)
+        # WASHING        → Plus (→COLOR_MATCHING), Star (→WASHING), Triangle (→MAINTENANCE)
+        # COLOR_MATCHING → Star (→WASHING), Triangle (→MAINTENANCE)
         with self._lock:
             current_mode = (self._states.get(plant) or _DUMMY).mode
         if current_mode != "NORMAL":
-            _is_arrow        = shape_name is not None and shape_name.lower() == "arrow"
-            _is_plus         = shape_name is not None and shape_name.lower() == "plus"
-            _arrow_ends_maint = _is_arrow and current_mode == "MAINTENANCE"
-            _plus_ends_wash   = _is_plus  and current_mode == "WASHING"
-            if not (_arrow_ends_maint or _plus_ends_wash):
+            _is_arrow    = shape_name is not None and shape_name.lower() == "arrow"
+            _is_plus     = shape_name is not None and shape_name.lower() == "plus"
+            _is_star     = shape_name is not None and shape_name.lower() == "star"
+            _is_triangle = shape_name is not None and shape_name.lower() == "triangle"
+            _arrow_ends_maint    = _is_arrow    and current_mode == "MAINTENANCE"
+            _plus_ends_wash      = _is_plus     and current_mode == "WASHING"
+            _star_from_color     = _is_star     and current_mode == "COLOR_MATCHING"
+            _triangle_from_color = _is_triangle and current_mode == "COLOR_MATCHING"
+            _star_from_wash      = _is_star     and current_mode == "WASHING"
+            _triangle_from_wash  = _is_triangle and current_mode == "WASHING"
+            if not (_arrow_ends_maint or _plus_ends_wash
+                    or _star_from_color or _triangle_from_color
+                    or _star_from_wash  or _triangle_from_wash):
                 self._hits.pop(plant, None)
                 return
 
@@ -157,17 +165,6 @@ class ModeManager:
             hits.clear()
             return
 
-        # ── Trigger guards ────────────────────────────────────────────────────
-        is_arrow          = (shape_name.lower() == "arrow")
-        is_wash_to_color  = (current_mode == "WASHING" and shape_name.lower() == "plus")
-
-        if not is_arrow and not is_wash_to_color:
-            # Normal shapes only fire when plant is idle / has no active session
-            can_trigger = (not has_production_session) or (not belt_active)
-            if not can_trigger:
-                hits.clear()
-                return
-
         # ── Consecutive hit tracking ──────────────────────────────────────────
         if hits and hits[-1] != shape_name:
             hits.clear()       # different shape appeared — reset buffer
@@ -183,10 +180,16 @@ class ModeManager:
         """
         Call for every piece_delta > 0 when the plant is in a non-NORMAL mode.
         Counts the piece in the mode session and checks the piece-burst end condition
-        for WASHING and COLOR_MATCHING (10 pieces in 35 s).
+        for WASHING and COLOR_MATCHING (10 pieces in 50 s).
         Returns True if the mode ended via burst trigger.
+
+        Burst semantics: the 10 burst pieces belong to the NEW unaccounted session,
+        not to the ending mode session.  ColorMatching/Washing EndTime and
+        ProcessedPieces are both anchored to the moment the burst started
+        (burst_times[0]), so the burst pieces are cleanly handed off.
         """
-        snap_to_end: Optional[PlantModeState] = None
+        snap_to_end:    Optional[PlantModeState] = None
+        snap_burst_start: Optional[datetime]     = None
 
         with self._lock:
             state = self._states.get(plant)
@@ -203,12 +206,20 @@ class ModeManager:
                 while state.burst_times and state.burst_times[0] < cutoff:
                     state.burst_times.popleft()
                 if len(state.burst_times) >= COLOR_BURST_COUNT:
-                    snap_to_end = state
+                    # Burst pieces belong to the new unaccounted session.
+                    # Roll back piece_count so the mode session only gets
+                    # pieces that arrived before the burst window.
+                    snap_burst_start   = state.burst_times[0]
+                    state.piece_count -= COLOR_BURST_COUNT
+                    snap_to_end        = state
                     del self._states[plant]
 
         if snap_to_end is not None:
-            self._end_session_db(snap_to_end, datetime.now())
+            burst_start = snap_burst_start or datetime.now()
+            self._end_session_db(snap_to_end, burst_start)
             print(f"[ModeManager] {plant} {snap_to_end.mode} ended — piece burst reached")
+            from app.db.session_manager import session_manager
+            session_manager.start_burst_unaccounted(plant, burst_start, COLOR_BURST_COUNT)
             return True
 
         # Heartbeat: push updated piece count to DB
@@ -257,7 +268,11 @@ class ModeManager:
                 )
                 self._states[plant] = new_state
 
-        # End previous session outside lock
+        # End any running production session (accounted or unaccounted) before mode starts
+        from app.db.session_manager import session_manager
+        session_manager.end_active_session_for_plant(plant)
+
+        # End previous mode session outside lock
         if snap_end is not None:
             self._end_session_db(snap_end, ts)
 

@@ -12,19 +12,25 @@ export async function GET() {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  const client = await clerkClient();
-  const { data } = await client.users.getUserList({ limit: 100 });
+  try {
+    const client = await clerkClient();
+    const { data } = await client.users.getUserList({ limit: 100 });
 
-  const users = data.map(u => ({
-    id:        u.id,
-    email:     u.emailAddresses[0]?.emailAddress ?? '',
-    firstName: u.firstName,
-    lastName:  u.lastName,
-    role:      (u.publicMetadata?.role as string | undefined) ?? ROLES.SUPERVISOR,
-    createdAt: u.createdAt,
-  }));
+    const users = data.map(u => ({
+      id:        u.id,
+      email:     u.emailAddresses[0]?.emailAddress ?? '',
+      firstName: u.firstName,
+      lastName:  u.lastName,
+      role:      (u.publicMetadata?.role as string | undefined) ?? ROLES.SUPERVISOR,
+      createdAt: u.createdAt,
+    }));
 
-  return NextResponse.json(users);
+    return NextResponse.json(users);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[/api/admin/users GET]', msg);
+    return NextResponse.json({ error: msg }, { status: 500 });
+  }
 }
 
 export async function POST(req: Request) {

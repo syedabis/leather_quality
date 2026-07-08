@@ -62,7 +62,7 @@ REC_DIR     = BASE / "recordings"
 
 TARGET_FPS          = 5        # target inference rate; frames between this and video FPS are skipped
 REC_FPS             = 10.0
-CONF                = 0.15
+CONF                = 0.70     # default confidence — matches run_all_plants.py production default
 DISPLAY_W           = 1280
 DISPLAY_H           = 720
 WINDOW_NAME         = "Leather Detection"
@@ -183,6 +183,15 @@ def _resolve_sources(source: str) -> list:
         return [p]
     print(f"  [warn] Source not found: {source}")
     return []
+
+
+def _get_unit_conf(configs: dict, unit: str) -> float:
+    """Per-unit YOLO confidence threshold — matches run_all_plants.py logic."""
+    val = (configs.get(unit) or {}).get("confidence")
+    try:
+        return float(val) if val is not None else CONF
+    except (TypeError, ValueError):
+        return CONF
 
 
 def _in_roi(cx: float, cy: float, roi: dict) -> bool:
@@ -340,8 +349,8 @@ class RoiCounter:
 
 def _suppress_overlapping_tracks(
     track_results: list[tuple[int, list]],
-    iou_threshold: float = 0.30,
-    iomin_threshold: float = 0.50,
+    iou_threshold: float = 0.60,
+    iomin_threshold: float = 0.80,
 ) -> list[tuple[int, list]]:
     """Remove duplicate track IDs caused by one object getting multiple detections.
 
@@ -431,6 +440,7 @@ def run_video(model: YOLO, video_source, unit: str,
 
     configs   = unit_configs or {}
     roi, _line = _get_unit_cfg(configs, unit, frame_w, frame_h)
+    unit_conf  = _get_unit_conf(configs, unit)
 
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -465,6 +475,8 @@ def run_video(model: YOLO, video_source, unit: str,
     new_idle_session    = 0
     last_frame_time     = time.time()
     skip_start_frames   = int(SKIP_START_SECONDS * video_fps)
+    proc_frame          = 0                      # processed-frame counter for eviction
+    last_roi_frame: dict[int, int] = {}          # tid → proc_frame when last seen IN roi
 
     if SKIP_START_SECONDS > 0:
         print(f"  Skipping first {SKIP_START_SECONDS}s ({skip_start_frames} frames)")
@@ -503,7 +515,7 @@ def run_video(model: YOLO, video_source, unit: str,
         frame_time_delta = now - last_frame_time
         last_frame_time  = now
 
-        results    = model.predict(frame, conf=CONF, iou=0.45, device=DEVICE, verbose=False, show=False)
+        results    = model.predict(frame, conf=unit_conf, iou=0.45, device=DEVICE, verbose=False, show=False)
         result     = results[0]
         boxes_xyxy = result.boxes.xyxy.cpu().numpy().tolist() if result.boxes is not None and len(result.boxes) > 0 else []
         confs_list = result.boxes.conf.cpu().numpy().tolist() if result.boxes is not None and len(result.boxes) > 0 else []
@@ -521,6 +533,23 @@ def run_video(model: YOLO, video_source, unit: str,
             if in_roi:
                 roi_ids.append(tid)
         counted_ids_now = counter.update(roi_ids)
+
+        proc_frame += 1
+        for _tid in roi_ids:
+            last_roi_frame[_tid] = proc_frame
+
+        # Evict a counted ghost track using two triggers:
+        #  1. Detected OUTSIDE the ROI → evict immediately (piece has moved on, fast path)
+        #  2. Not detected anywhere for 5 processed frames (~1 s at 5 FPS) → fallback eviction
+        #     for pieces that exit the ROI without ever being detected outside.
+        all_visible_ids = {tid for tid, _ in track_results}
+        roi_set = set(roi_ids)
+        for _tid in list(counter.counted_ids):
+            if _tid not in roi_set and _tid in tracker._tracks:
+                if _tid in all_visible_ids:
+                    del tracker._tracks[_tid]
+                elif proc_frame - last_roi_frame.get(_tid, 0) >= 5:
+                    del tracker._tracks[_tid]
 
         stats.items_counted = counter.total
         count               = len(result.boxes) if result.boxes is not None else 0
@@ -631,25 +660,53 @@ def run_video(model: YOLO, video_source, unit: str,
         cv2.putText(display, _seg_s, (_xs, _ty), _f, _fs, _st_color,        _ft)
         cv2.putText(display, _seg_u, (_xu, _ty), _f, _fs, (255, 255, 255),  _ft)
 
+        # Dot color legend:
+        #   Magenta (255,0,255) = detected + counted NOW  (first frame in ROI)
+        #   Green   (0,255,0)   = detected + already counted (subsequent ROI frames)
+        #   Orange  (0,165,255) = detected but outside ROI
+        _COLOR_COUNTED_NOW = (255, 0, 255)   # Magenta
+        _COLOR_COUNTED     = (0, 255, 0)     # Green
+        _COLOR_OUT_OF_ROI  = (0, 165, 255)   # Orange
+
         for track in debug_tracks:
             tid, in_roi_flag = track["tid"], track["in_roi"]
-            # Convert track coordinates to display coordinates
             dcx = int(track["cx"] * sx) + x_offset
             dcy = int(track["cy"] * sy) + y_offset
             counted_now = tid in counted_ids_now
             counted     = tid in counter.counted_ids
-            dot_color   = (255, 255, 0) if counted_now else ((0, 255, 0) if in_roi_flag else (0, 165, 255))
-            cv2.circle(display, (dcx, dcy), 5, dot_color, -1)
-            cv2.circle(display, (dcx, dcy), 8, dot_color, 2)
-            status   = ("ROI:Y" if in_roi_flag else "ROI:N") + (" NEW" if counted_now else (" COUNTED" if counted else ""))
-            _conf    = track.get("conf")
-            _conf_s  = f"  {_conf:.0%}" if _conf is not None else ""
-            dbg_text = f"ID {tid}{_conf_s}  {status}"
-            (dtw, dth), _ = cv2.getTextSize(dbg_text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-            tx = max(8, min(dcx + 10, DISPLAY_W - dtw - 8))
-            ty = max(dth + 8, min(dcy - 10, DISPLAY_H - 8))
+            if counted_now:
+                dot_color = _COLOR_COUNTED_NOW
+                status    = "COUNTED NOW"
+            elif in_roi_flag and counted:
+                dot_color = _COLOR_COUNTED
+                status    = "COUNTED"
+            else:
+                dot_color = _COLOR_OUT_OF_ROI
+                status    = "OUT OF ROI"
+            _conf   = track.get("conf")
+            _conf_s = f"{_conf:.0%}" if _conf is not None else "?"
+            cv2.circle(display, (dcx, dcy), 7, dot_color, -1)
+            cv2.circle(display, (dcx, dcy), 11, dot_color, 2)
+            dbg_text = f"ID{tid} {_conf_s} {status}"
+            (dtw, dth), _ = cv2.getTextSize(dbg_text, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)
+            tx = max(8, min(dcx + 13, DISPLAY_W - dtw - 8))
+            ty = max(dth + 8, min(dcy - 13, DISPLAY_H - 8))
             cv2.rectangle(display, (tx - 3, ty - dth - 3), (tx + dtw + 3, ty + 3), (0, 0, 0), -1)
-            cv2.putText(display, dbg_text, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.45, dot_color, 1)
+            cv2.putText(display, dbg_text, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.48, dot_color, 1)
+
+        # Legend — bottom-left corner
+        _legend = [
+            ((255, 0, 255), "Counted NOW"),
+            ((0, 255, 0),   "Already counted"),
+            ((0, 165, 255), "Out of ROI"),
+        ]
+        _lx, _ly = 10, DISPLAY_H - 14
+        for _lc, _lt in reversed(_legend):
+            (lw, lh), _ = cv2.getTextSize(_lt, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+            cv2.rectangle(display, (_lx - 3, _ly - lh - 3), (_lx + 14 + lw + 3, _ly + 3), (0, 0, 0), -1)
+            cv2.circle(display, (_lx + 5, _ly - lh // 2), 5, _lc, -1)
+            cv2.putText(display, _lt, (_lx + 14, _ly), cv2.FONT_HERSHEY_SIMPLEX, 0.45, _lc, 1)
+            _ly -= lh + 8
 
 
         cv2.imshow(WINDOW_NAME, display)
@@ -762,6 +819,13 @@ def run_image(model: YOLO, image_path, unit: str,
         if in_roi:
             roi_ids.append(tid)
     counted_ids_now = counter.update(roi_ids)
+
+    # Evict counted tracks that have left the ROI to prevent ghost-ID reuse
+    _roi_set = set(roi_ids)
+    for _tid in list(counter.counted_ids):
+        if _tid not in _roi_set and _tid in tracker._tracks:
+            del tracker._tracks[_tid]
+
     count           = len(result.boxes) if result.boxes is not None else 0
 
     # ── Build display ─────────────────────────────────────────────────────
@@ -804,23 +868,35 @@ def run_image(model: YOLO, image_path, unit: str,
     cv2.rectangle(display, (10 - _pad, DISPLAY_H - hh - 12 - _pad), (10 + hw + _pad, DISPLAY_H - 12 + _pad), (0, 0, 0), -1)
     cv2.putText(display, hint, (10, DISPLAY_H - 12), _f, 0.5, (180, 180, 180), 1)
 
-    # Track dots
+    # Track dots (same color scheme as run_video)
+    _COLOR_COUNTED_NOW = (255, 0, 255)
+    _COLOR_COUNTED     = (0, 255, 0)
+    _COLOR_OUT_OF_ROI  = (0, 165, 255)
     for track in debug_tracks:
         tid, in_roi_f = track["tid"], track["in_roi"]
         dcx = int(track["cx"] * sx) + x_off
         dcy = int(track["cy"] * sx) + y_off
-        c_now = tid in counted_ids_now
-        dot   = (255, 255, 0) if c_now else ((0, 255, 0) if in_roi_f else (0, 165, 255))
-        cv2.circle(display, (dcx, dcy), 5, dot, -1)
-        cv2.circle(display, (dcx, dcy), 8, dot, 2)
-        _conf  = track.get("conf")
-        _conf_s = f"  {_conf:.0%}" if _conf is not None else ""
-        lbl  = f"ID {tid}{_conf_s}  ({'ROI:Y' if in_roi_f else 'ROI:N'}){'  NEW' if c_now else ''}"
-        (lw, lh), _ = cv2.getTextSize(lbl, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-        tx = max(8, min(dcx + 10, DISPLAY_W - lw - 8))
-        ty = max(lh + 8, min(dcy - 10, DISPLAY_H - 8))
+        c_now    = tid in counted_ids_now
+        counted  = tid in counter.counted_ids
+        if c_now:
+            dot    = _COLOR_COUNTED_NOW
+            status = "COUNTED NOW"
+        elif in_roi_f and counted:
+            dot    = _COLOR_COUNTED
+            status = "COUNTED"
+        else:
+            dot    = _COLOR_OUT_OF_ROI
+            status = "OUT OF ROI"
+        _conf   = track.get("conf")
+        _conf_s = f"{_conf:.0%}" if _conf is not None else "?"
+        cv2.circle(display, (dcx, dcy), 7, dot, -1)
+        cv2.circle(display, (dcx, dcy), 11, dot, 2)
+        lbl = f"ID{tid} {_conf_s} {status}"
+        (lw, lh), _ = cv2.getTextSize(lbl, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)
+        tx = max(8, min(dcx + 13, DISPLAY_W - lw - 8))
+        ty = max(lh + 8, min(dcy - 13, DISPLAY_H - 8))
         cv2.rectangle(display, (tx - 3, ty - lh - 3), (tx + lw + 3, ty + 3), (0, 0, 0), -1)
-        cv2.putText(display, lbl, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.45, dot, 1)
+        cv2.putText(display, lbl, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.48, dot, 1)
 
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
     cv2.imshow(WINDOW_NAME, display)

@@ -139,6 +139,18 @@ class SessionManager:
         self._stop.set()
         print("[SessionManager] stopped")
 
+    def end_active_session_for_plant(self, plant: str) -> None:
+        """End any running accounted or unaccounted session for a plant.
+        Called when a shape card fires 5 hits — the mode takes over."""
+        with self._lock:
+            state = self._state.get(plant)
+            if state is None:
+                return
+            del self._state[plant]
+            self._consec_buffer.pop(plant, None)
+        self._do_end_session_db(state)
+        print(f"[SessionManager] {plant} {state.session_type} session {state.session_id} ended — shape card interrupted")
+
     def end_all_active_sessions(self) -> None:
         """
         Ends every currently-tracked session (accounted + unaccounted) right now,
@@ -347,13 +359,11 @@ class SessionManager:
                     # New accounted session from mobile — start tracking
                     self._state[plant] = self._make_accounted_state(plant, db_row)
 
-                elif mem.session_type == 'accounted':
-                    if mem.session_id != db_row["session_id"]:
-                        # Different session ID — previous completed, new one opened
-                        states_to_end.append(mem)
-                        self._state[plant] = self._make_accounted_state(plant, db_row)
-                    else:
-                        # Same session — refresh metadata from DB (including lot_no in case mobile updated it)
+                elif mem.session_type == 'unaccounted':
+                    if mem.session_id != -1 and mem.session_id == db_row["session_id"]:
+                        # Same row — mobile used assign-lot to relabel our unaccounted session.
+                        # Upgrade in-memory state to accounted without ending or restarting it.
+                        mem.session_type    = 'accounted'
                         mem.lot_no          = db_row["lot_no"]
                         mem.expected_pieces = db_row["expected_pieces"]
                         mem.order_no        = db_row["order_no"]
@@ -361,8 +371,24 @@ class SessionManager:
                         mem.colour_name     = db_row["colour_name"]
                         mem.party_name      = db_row["party_name"]
                         mem.pk_code         = db_row["pk_code"]
+                        print(f"[SessionManager] {plant} unaccounted session {mem.session_id} upgraded to accounted via assign-lot")
+                    else:
+                        # Different session ID — mobile started a new accounted session
+                        # while our unaccounted was running. End ours, track the new one.
+                        states_to_end.append(mem)
+                        self._consec_buffer.pop(plant, None)
+                        self._state[plant] = self._make_accounted_state(plant, db_row)
 
-            # Fix: detect accounted sessions ended by mobile (no longer INPROCESS in DB)
+                elif mem.session_type == 'accounted':
+                    if mem.session_id != db_row["session_id"]:
+                        # Different session ID — mobile ended previous and opened a new one
+                        states_to_end.append(mem)
+                        self._state[plant] = self._make_accounted_state(plant, db_row)
+                    # Same session — no metadata refresh; mobile owns lot details
+
+            # Detect accounted sessions that mobile ended without starting a new one.
+            # Without this, our in-memory state stays alive, pieces pile into it silently,
+            # and no unaccounted session can ever trigger for that plant.
             for plant, mem in list(self._state.items()):
                 if mem is not None and mem.session_type == 'accounted' and plant not in db_by_plant:
                     states_to_end.append(mem)

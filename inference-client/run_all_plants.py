@@ -393,8 +393,8 @@ def _in_roi(cx: float, cy: float, roi: dict) -> bool:
 
 def _suppress_overlapping_tracks(
     track_results: list[tuple[int, list]],
-    iou_threshold: float = 0.30,
-    iomin_threshold: float = 0.50,
+    iou_threshold: float = 0.60,
+    iomin_threshold: float = 0.80,
 ) -> list[tuple[int, list]]:
     """Remove duplicate track IDs caused by one object getting multiple detections.
 
@@ -524,7 +524,7 @@ def _plant_worker(
         print(f"[{unit}] No source found — worker exiting.")
         return
 
-    tracker  = SimpleIoUTracker()
+    tracker  = SimpleIoUTracker(iou_thresh=0.25, max_age=20)
     counter  = RoiCounter()
 
     _last_shape_box: Optional[list] = None  # cached shape-card bbox → suppresses it from piece count
@@ -537,6 +537,8 @@ def _plant_worker(
     new_idle_session    = 0
     frames_pushed       = 0
     idle_started        = None   # time.time() when idle began (for duration calc)
+    proc_frame          = 0                      # processed-frame counter for eviction
+    last_roi_frame: dict[int, int] = {}          # tid → proc_frame when last seen IN roi
     idle_period_dt      = None   # datetime when idle began (for IdlePeriods write)
 
     src_index = 0
@@ -620,6 +622,23 @@ def _plant_worker(
                         continue
                     roi_ids.append(tid)
             counted_ids_now = counter.update(roi_ids)
+
+            proc_frame += 1
+            for _tid in roi_ids:
+                last_roi_frame[_tid] = proc_frame
+
+            # Evict a counted ghost track using two triggers:
+            #  1. Detected OUTSIDE the ROI → evict immediately (piece has moved on, fast path)
+            #  2. Not detected anywhere for 5 processed frames (~1 s at 5 FPS) → fallback eviction
+            #     for pieces that exit the ROI without ever being detected outside.
+            _all_visible = {tid for tid, _ in track_results}
+            _roi_set     = set(roi_ids)
+            for _tid in list(counter.counted_ids):
+                if _tid not in _roi_set and _tid in tracker._tracks:
+                    if _tid in _all_visible:
+                        del tracker._tracks[_tid]
+                    elif proc_frame - last_roi_frame.get(_tid, 0) >= 5:
+                        del tracker._tracks[_tid]
 
             count       = len(result.boxes) if result.boxes is not None else 0
             piece_delta = len(counted_ids_now)
