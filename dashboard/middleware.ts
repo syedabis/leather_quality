@@ -19,9 +19,8 @@ export default clerkMiddleware(
     }
 
     // auth.protect() is Clerk v7's canonical method for protecting routes.
-    // Unlike auth() + manual redirect, it handles the dev-mode handshake
-    // (__clerk_db_jwt / __clerk_CH) correctly so the browser doesn't loop.
-    // It redirects to sign-in automatically if the user is not authenticated.
+    // It handles the dev-mode handshake (__clerk_db_jwt / __clerk_CH) correctly
+    // and redirects to sign-in automatically if the user is not authenticated.
     await auth.protect();
 
     // Admin-only routes
