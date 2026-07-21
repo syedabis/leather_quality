@@ -166,7 +166,7 @@ function DashboardBadge({ d }: { d: DashboardGrant }) {
 function MobileBadge({ m }: { m: MobileGrant }) {
   if (!m.enabled) return <span className="text-[10px] text-gray-400 italic">Off</span>;
   return (
-    <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold border bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800 text-blue-600 dark:text-blue-400">
+    <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold border bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800 text-blue-600 dark:text-blue-400 whitespace-nowrap">
       {m.role === 'admin' ? 'Admin · All plants' : `User · ${m.plant}`}
     </span>
   );

@@ -4,7 +4,8 @@ ModeManager — shape-triggered operating mode state machine.
 Shapes (detected by maintenance model.pt):
   Star     → WASHING        (pieces counted; auto-ends after 20 min belt idle)
   Plus     → COLOR_MATCHING (pieces counted; auto-ends on 10-piece burst in 35 s)
-  Triangle → MAINTENANCE    (pieces counted; ends only via Arrow)
+  Triangle → MAINTENANCE    (pieces counted; ends via Arrow, or immediately if
+                              a new production session starts — see force_end_mode)
   Arrow    → end any active mode → plant returns to NORMAL session logic
 
 Trigger gate: shape only fires when the plant has NO active production session
@@ -466,16 +467,19 @@ class ModeManager:
 
     def force_end_mode(self, plant: str) -> None:
         """
-        End WASHING or COLOR_MATCHING immediately when an accounted production
-        session starts.  MAINTENANCE is excluded — it requires an explicit Arrow.
+        End WHATEVER mode is active — WASHING, COLOR_MATCHING, or MAINTENANCE —
+        immediately when a new production session (accounted or unaccounted)
+        starts. No mode survives a new session start; MAINTENANCE previously
+        required an explicit Arrow, which let it silently swallow every piece
+        of a new LOT if the Arrow was never shown.
         """
         with self._lock:
             state = self._states.get(plant)
-            if state is None or state.mode not in ("WASHING", "COLOR_MATCHING"):
+            if state is None:
                 return
             del self._states[plant]
         self._end_session_db(state, datetime.now())
-        print(f"[ModeManager] {plant} {state.mode} ended — accounted session started")
+        print(f"[ModeManager] {plant} {state.mode} ended — new session started")
 
     def end_all_active_modes(self) -> None:
         """Graceful shutdown — close any open mode sessions with accurate EndTime."""
