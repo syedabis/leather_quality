@@ -15,18 +15,30 @@ Each mode creates its own row in dbo.AppSessions with the matching session_type.
 from __future__ import annotations
 
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
 
 from app.db.connection import get_connection
+from app.db.outbox import outbox
 
 # ── Tuning (defaults — overridden from DB at startup via load_settings) ────────
 SHAPE_CONF_THRESHOLD   = 0.89   # min YOLO confidence to count a shape hit
-SHAPE_CONSECUTIVE_HITS = 5      # consecutive checks before mode fires (~15 s at 5 FPS)
+SHAPE_CONSECUTIVE_HITS = 5      # consecutive checks before mode fires (5 × 3 s = ~15 s)
 SHAPE_COOLDOWN_S       = 15     # seconds to ignore shapes after a mode change
-SHAPE_CHECK_EVERY_N    = 15     # run shape model every N processed frames (~3 s at 5 FPS)
+
+# Shape checks are paced by WALL CLOCK, not by frame count.
+#
+# This used to be SHAPE_CHECK_EVERY_N = 15 processed frames, tuned for 5 FPS
+# (~3 s/check). But run_all_plants runs at TARGET_FPS = 2, and halves to 1 FPS
+# once the belt goes idle — which is exactly the state a shape card is shown in,
+# since the trigger requires an empty ROI. So a check landed every 7.5 s when the
+# belt was busy and every 15 s when it was idle, and 5 consecutive hits took
+# 37–75 seconds instead of the intended 15. Timing off the clock keeps the
+# interval honest no matter what the frame rate is doing.
+SHAPE_CHECK_INTERVAL_S = 3.0    # seconds between shape-model checks, per plant
 
 WASHING_IDLE_TIMEOUT_S = 1200   # 20 min idle → auto-end WASHING
 COLOR_BURST_COUNT      = 10     # pieces in burst window → auto-end COLOR_MATCHING
@@ -67,19 +79,32 @@ class ModeManager:
         self._hits:      dict[str, list[str]] = {}
         # per-plant cooldown expiry timestamps
         self._cooldowns: dict[str, datetime]  = {}
-        # per-plant frame counter for shape-check throttling
-        self._frame_cnt: dict[str, int]       = {}
+        # per-plant time.time() of the last shape check (paces SHAPE_CHECK_INTERVAL_S)
+        self._last_check: dict[str, float]    = {}
+
+        # Recording trigger: set at first hit, expires after 30 s
+        self._rec_start: dict[str, float] = {}   # plant → time.time() of first hit
+        self._rec_shape: dict[str, str]   = {}   # plant → shape name for filename
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
+    def _reconcile_session_id(self, temp_id: int, real_id: int) -> None:
+        """Outbox callback: an offline-created mode session was just inserted for
+        real — swap its temp id for the real SessionId if it's still live."""
+        with self._lock:
+            for state in self._states.values():
+                if state is not None and state.session_id == temp_id:
+                    state.session_id = real_id
+                    print(f"[ModeManager] reconciled temp {temp_id} -> session {real_id}")
+
     def start(self) -> None:
+        outbox.register_session_reconciler(self._reconcile_session_id)
         threading.Thread(
             target=self._timer_loop, name="mm-timer", daemon=True
         ).start()
         print("[ModeManager] started")
 
     def _timer_loop(self) -> None:
-        import time
         while True:
             time.sleep(30)
             try:
@@ -90,10 +115,18 @@ class ModeManager:
     # ── Called from plant worker (every frame) ─────────────────────────────────
 
     def tick_frame(self, plant: str) -> bool:
-        """Increment per-plant frame counter. Returns True when a shape check is due."""
-        n = self._frame_cnt.get(plant, 0) + 1
-        self._frame_cnt[plant] = n
-        return n % SHAPE_CHECK_EVERY_N == 0
+        """Returns True when a shape check is due for this plant.
+
+        Paced off the wall clock, so the interval holds at SHAPE_CHECK_INTERVAL_S
+        regardless of the processed frame rate or the idle-belt frame-rate throttle.
+        Call once per processed frame.
+        """
+        now  = time.time()
+        last = self._last_check.get(plant)
+        if last is None or (now - last) >= SHAPE_CHECK_INTERVAL_S:
+            self._last_check[plant] = now
+            return True
+        return False
 
     def on_belt_activity(self, plant: str, ts: datetime) -> None:
         """Call whenever any object is present in the ROI (keeps washing timer alive)."""
@@ -113,7 +146,7 @@ class ModeManager:
         pieces_in_roi:          bool = False,    # True when non-shape objects are in ROI right now
     ) -> None:
         """
-        Called every SHAPE_CHECK_EVERY_N frames with the best YOLO shape detection.
+        Called every SHAPE_CHECK_INTERVAL_S seconds with the best YOLO shape detection.
         Manages the consecutive-hit buffer and fires mode transitions.
         """
         # ── Active-mode gate ─────────────────────────────────────────────────────
@@ -169,6 +202,13 @@ class ModeManager:
         if hits and hits[-1] != shape_name:
             hits.clear()       # different shape appeared — reset buffer
         hits.append(shape_name)
+
+        # First hit in a new sequence → open a 30-second recording window
+        if len(hits) == 1 and not self.is_recording(plant):
+            self._rec_start[plant] = time.time()
+            self._rec_shape[plant] = shape_name
+            print(f"[ModeManager][{plant}] recording window opened ({shape_name})")
+
         print(f"[ModeManager][{plant}] hit {len(hits)}/{SHAPE_CONSECUTIVE_HITS} — {shape_name} conf={confidence:.2f}")
 
         if len(hits) >= SHAPE_CONSECUTIVE_HITS:
@@ -235,6 +275,18 @@ class ModeManager:
 
     def has_active_mode(self, plant: str) -> bool:
         return self.get_mode(plant) != "NORMAL"
+
+    def is_recording(self, plant: str) -> bool:
+        """True while within the 30-second recording window from the first shape hit."""
+        start = self._rec_start.get(plant)
+        return start is not None and (time.time() - start) < 30.0
+
+    def recording_info(self, plant: str) -> Optional[tuple]:
+        """Returns (start_timestamp, shape_name) if recording is active, else None."""
+        start = self._rec_start.get(plant)
+        if start is None or (time.time() - start) >= 30.0:
+            return None
+        return (start, self._rec_shape.get(plant, "unknown"))
 
     def get_state(self, plant: str) -> Optional[PlantModeState]:
         with self._lock:
@@ -304,7 +356,22 @@ class ModeManager:
 
     # ── DB helpers (called from daemon threads) ────────────────────────────────
 
+    def _buffer_mode_create(self, plant: str, mode: str, start_time: datetime) -> None:
+        """Buffer a mode-session INSERT and give the live state a temp id, so the
+        mode survives an outage. The outbox reconciler swaps in the real
+        SessionId once the DB is back."""
+        temp_id = outbox.alloc_temp_id()
+        outbox.enqueue_session_create(temp_id, plant, start_time, mode, 0)
+        with self._lock:
+            s = self._states.get(plant)
+            if s is not None and s.session_id == -1:
+                s.session_id = temp_id
+        print(f"[ModeManager] {mode} session buffered (temp {temp_id}) for {plant} - DB offline")
+
     def _create_session_db(self, plant: str, mode: str, start_time: datetime) -> None:
+        if not outbox.is_online():
+            self._buffer_mode_create(plant, mode, start_time)
+            return
         try:
             with get_connection() as conn:
                 cur = conn.cursor()
@@ -327,14 +394,30 @@ class ModeManager:
                         s.session_id = sid
                 print(f"[ModeManager] Session {sid} created ({mode}, plant={plant})")
         except Exception as exc:
-            print(f"[ModeManager] Failed to create {mode} session for {plant}: {exc}")
-            with self._lock:
-                s = self._states.get(plant)
-                if s is not None and s.session_id == -1:
-                    self._states.pop(plant, None)
+            print(f"[ModeManager] Create failed, buffering {mode} for {plant}: {exc}")
+            outbox.mark_write_failed()
+            self._buffer_mode_create(plant, mode, start_time)
 
     def _end_session_db(self, state: PlantModeState, end_time: datetime) -> None:
+        """Non-blocking: always runs on its own thread. _fire_mode and
+        on_piece_detected call this inline from the hot per-plant capture/
+        inference thread, which must never block on a DB write — a caller
+        that genuinely needs it to block (e.g. graceful shutdown) should call
+        _do_end_session_db directly instead."""
+        threading.Thread(
+            target=self._do_end_session_db, args=(state, end_time), daemon=True
+        ).start()
+
+    def _do_end_session_db(self, state: PlantModeState, end_time: datetime) -> None:
         if state.session_id == -1:
+            return  # never persisted (insert still in flight) — nothing to end
+
+        # Offline → buffer the end. session_id may be a temp id (mode started
+        # during the outage) or a real id (mode ends mid-outage).
+        if not outbox.is_online():
+            outbox.enqueue_session_end(state.session_id, end_time, state.piece_count)
+            print(f"[ModeManager] Session end buffered (id {state.session_id}, "
+                  f"{state.mode}, pieces={state.piece_count}) - DB offline")
             return
         try:
             with get_connection() as conn:
@@ -353,12 +436,20 @@ class ModeManager:
                 f"({state.mode}, pieces={state.piece_count})"
             )
         except Exception as exc:
-            print(f"[ModeManager] Failed to end session {state.session_id}: {exc}")
+            print(f"[ModeManager] End write failed, buffering session {state.session_id}: {exc}")
+            outbox.mark_write_failed()
+            outbox.enqueue_session_end(state.session_id, end_time, state.piece_count)
 
     def _heartbeat_db(self, plant: str) -> None:
+        # Skip while offline (avoids a 10 s-blocking connect per piece) and for
+        # any not-yet-real session id (-1 in flight, or a negative temp id).
+        # The count self-heals: it's an absolute SET, so the next heartbeat after
+        # reconnect writes the correct total.
+        if not outbox.is_online():
+            return
         with self._lock:
             s = self._states.get(plant)
-            if s is None or s.session_id == -1:
+            if s is None or s.session_id <= 0:
                 return
             sid, cnt = s.session_id, s.piece_count
         try:

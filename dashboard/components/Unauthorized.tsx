@@ -1,29 +1,14 @@
 "use client";
-import { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import { useClerk, useUser } from '@clerk/nextjs';
+import { useClerk } from '@clerk/nextjs';
 import { motion } from 'framer-motion';
 import { FiLock } from 'react-icons/fi';
 
-export default function Unauthorized() {
-  const router = useRouter();
+interface UnauthorizedProps {
+  message?: string;
+}
+
+export default function Unauthorized({ message }: UnauthorizedProps) {
   const { signOut } = useClerk();
-  const { user, isLoaded } = useUser();
-
-  // If role was just granted, redirect in
-  useEffect(() => {
-    if (isLoaded && user?.publicMetadata?.role === 'admin') {
-      router.push('/overview');
-    }
-  }, [user, isLoaded, router]);
-
-  if (!isLoaded || user?.publicMetadata?.role === 'admin') {
-    return (
-      <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
-        <div className="w-6 h-6 border-2 border-[#2AAA8A]/30 border-t-[#2AAA8A] rounded-full animate-spin" />
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
@@ -40,7 +25,7 @@ export default function Unauthorized() {
           Access Denied
         </h1>
         <p className="text-gray-500 text-sm mb-8">
-          Your account doesn&apos;t have permission to access this dashboard. Contact an administrator to request access.
+          {message ?? "Your account doesn't have permission to access this dashboard. Contact an administrator to request access."}
         </p>
         <div className="flex flex-col gap-3">
           <button

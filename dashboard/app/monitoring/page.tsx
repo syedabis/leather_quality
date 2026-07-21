@@ -10,6 +10,7 @@ import CounterBadge from '../../components/CounterBadge';
 import Unauthorized from '../../components/Unauthorized';
 import { usePlantsData } from '../../hooks/usePlantsData';
 import { PLANTS } from '../../lib/constants';
+import { getDashboardAccess } from '../../lib/access';
 import type { PlantId } from '../../types';
 import { useRouter } from 'next/navigation';
 
@@ -27,7 +28,7 @@ export default function Monitoring() {
     );
   }
 
-  if (user?.publicMetadata?.role !== 'admin') {
+  if (getDashboardAccess(user?.publicMetadata).role !== 'admin') {
     return <Unauthorized />;
   }
 

@@ -4,6 +4,7 @@ import { useUser, useAuth } from '@clerk/nextjs';
 import { motion } from 'framer-motion';
 import { FiCamera, FiCheck, FiAlertCircle, FiUser, FiMail, FiShield, FiSliders, FiTrash2, FiCalendar, FiPlus, FiCoffee, FiTarget } from 'react-icons/fi';
 import { API_URL } from '../../lib/constants';
+import { getDashboardAccess } from '../../lib/access';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -254,7 +255,7 @@ export default function Settings() {
     );
   }
 
-  const role  = user?.publicMetadata?.role as string | undefined;
+  const role  = getDashboardAccess(user?.publicMetadata).role ?? undefined;
   const email = user?.primaryEmailAddress?.emailAddress ?? '';
 
   const avatarSrc = preview ?? user?.imageUrl;

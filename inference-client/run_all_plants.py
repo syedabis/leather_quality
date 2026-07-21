@@ -39,12 +39,21 @@ from datetime import datetime
 from app.db.connection import get_connection
 from app.db.frame_processor import FrameProcessor
 from app.db.session_manager import session_manager
-from app.db.mode_manager import mode_manager, SHAPE_CHECK_EVERY_N
+from app.db.mode_manager import mode_manager, SHAPE_CHECK_INTERVAL_S
+from app.db.outbox import outbox
 
 # ── RTSP stream stability — force TCP transport so UDP packet loss can't
 #    cause "Duplicate POC" / "Could not find ref" decoder errors.
 #    Must be set before any cv2.VideoCapture() call.
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|buffer_size;65536|max_delay;500000|reorder_queue_size;0"
+#
+#    stimeout/rw_timeout (microseconds) cap how long FFmpeg will wait on the
+#    TCP connect and on subsequent reads. Without these, a camera that's
+#    truly unreachable (powered off, not just a packet blip) has no upper
+#    bound at all — cv2.VideoCapture() can hang for minutes on one open
+#    attempt, so the existing reconnect/backoff loop below never actually
+#    gets to cycle at a sane pace. 5s is generous for cameras on the local
+#    172.16.x network and only trips when something is genuinely down.
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|buffer_size;65536|max_delay;500000|reorder_queue_size;0|stimeout;5000000|rw_timeout;5000000"
 os.environ["OPENCV_LOG_LEVEL"] = "SILENT"   # suppress FFmpeg decoder warnings in terminal
 
 # ── GPU / device ───────────────────────────────────────────────────────────
@@ -57,6 +66,8 @@ MODEL        = BASE / "yolov8s_seg_best.pt"
 SHAPE_MODEL  = BASE / "maintenance model.pt"
 VIDEOS_DIR  = BASE / "videos"
 CFG_FILE    = BASE / "unit_configs.json"
+REC_DIR     = BASE / "recordings" / "mode-trigger"
+REC_RETAIN_DAYS = 7
 
 # ── Inference config ───────────────────────────────────────────────────────
 TARGET_FPS       = 2
@@ -76,6 +87,23 @@ DISPLAY_H  = 360   # overridden at startup by _calc_window_size()
 # closed with an accurate EndTime instead of being orphaned for the next
 # startup's cleanup to guess at.
 STOP_SIGNAL_FILE = Path(__file__).resolve().parent / ".stop_signal"
+
+
+def _cleanup_old_recordings() -> None:
+    """Delete recordings older than REC_RETAIN_DAYS from recordings/mode-trigger/."""
+    if not REC_DIR.exists():
+        return
+    cutoff  = time.time() - REC_RETAIN_DAYS * 86400
+    deleted = 0
+    for f in REC_DIR.glob("*.mp4"):
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+                deleted += 1
+        except Exception:
+            pass
+    if deleted:
+        print(f"[rec] Cleaned up {deleted} recording(s) older than {REC_RETAIN_DAYS} days")
 
 
 def _get_screen_size() -> tuple[int, int]:
@@ -125,6 +153,23 @@ THUMB_W       = 640   # resize before encoding — cuts payload ~4x vs full res
 THUMB_H       = 360
 _push_pool    = ThreadPoolExecutor(max_workers=4, thread_name_prefix="frame-push")
 
+# One dedicated background worker per plant for DB writes — never a plant's own
+# capture/inference thread. A single worker per plant means that plant's writes
+# always run one at a time, in submission order, with no lock needed — there's
+# only one door for that plant. Different plants each get their own worker, so
+# they still all write fully in parallel with each other.
+_db_workers: dict[str, ThreadPoolExecutor] = {}
+_db_workers_guard = threading.Lock()
+
+
+def _serial_db_write(key: str, fn, *args, **kwargs) -> None:
+    with _db_workers_guard:
+        worker = _db_workers.get(key)
+        if worker is None:
+            worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"db-write-{key}")
+            _db_workers[key] = worker
+    worker.submit(fn, *args, **kwargs)
+
 
 def _push_frame(plant_id: str, frame_bgr) -> None:
     if not BACKEND_URL:
@@ -141,6 +186,48 @@ def _push_frame(plant_id: str, frame_bgr) -> None:
                 f"{BACKEND_URL}/api/frame/{plant_id}",
                 json={"frame": b64},
                 timeout=1.5,
+            )
+        except Exception:
+            pass
+
+    _push_pool.submit(_post)
+
+
+def _write_idle_period(unit: str, db_unit: str, idle_start: datetime, idle_end: datetime,
+                        duration_s: float, total_count_at_stop: int) -> None:
+    """Runs on that plant's dedicated DB-write worker — never on its capture/inference thread. Buffers
+    through the outbox exactly like FrameProcessor.process_frame, so an idle
+    period that falls inside a DB outage is replayed later instead of dropped."""
+    if not outbox.is_online():
+        outbox.enqueue_idle_period(db_unit, idle_start, idle_end, duration_s, total_count_at_stop)
+        return
+    try:
+        with get_connection() as _conn:
+            _conn.cursor().execute(
+                "INSERT INTO dbo.IdlePeriods "
+                "(idle_start, idle_end, duration_s, source_note, total_count_at_stop) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (idle_start, idle_end, duration_s, db_unit, total_count_at_stop),
+            )
+            _conn.commit()
+    except Exception as e:
+        print(f"[{unit}] IdlePeriods write failed, buffering: {e}")
+        outbox.mark_write_failed()
+        outbox.enqueue_idle_period(db_unit, idle_start, idle_end, duration_s, total_count_at_stop)
+
+
+def _notify(ntype: str, severity: str, source: str, message: str) -> None:
+    """Fire-and-forget alert to the backend notification store. Never blocks
+    inference; the backend throttles duplicates so callers can be liberal."""
+    if not BACKEND_URL:
+        return
+
+    def _post():
+        try:
+            requests.post(
+                f"{BACKEND_URL}/api/notifications",
+                json={"type": ntype, "severity": severity, "source": source, "message": message},
+                timeout=2.0,
             )
         except Exception:
             pass
@@ -528,7 +615,10 @@ def _plant_worker(
     counter  = RoiCounter()
 
     _last_shape_box: Optional[list] = None  # cached shape-card bbox → suppresses it from piece count
-    _shape_box_expiry: int          = 0     # frame_num when cache expires
+    _shape_box_expiry: float        = 0.0   # time.time() when the cache goes stale
+
+    _rec_writer: Optional[cv2.VideoWriter] = None
+    _rec_path:   Optional[str]             = None
 
     total_count         = 0
     last_detection_time = time.time()
@@ -617,7 +707,7 @@ def _plant_worker(
                 debug_tracks.append({"tid": tid, "cx": cx, "cy": cy, "in_roi": in_roi})
                 if in_roi:
                     # Skip if this object overlaps a cached shape card bbox
-                    if (_last_shape_box is not None and frame_num <= _shape_box_expiry
+                    if (_last_shape_box is not None and now <= _shape_box_expiry
                             and SimpleIoUTracker._iou(box, _last_shape_box) > 0.3):
                         continue
                     roi_ids.append(tid)
@@ -671,17 +761,10 @@ def _plant_worker(
                 if idle_started is not None and idle_period_dt is not None:
                     _dur_s = time.time() - idle_started
                     if _dur_s > 0:
-                        try:
-                            with get_connection() as _conn:
-                                _conn.cursor().execute(
-                                    "INSERT INTO dbo.IdlePeriods "
-                                    "(idle_start, idle_end, duration_s, source_note, total_count_at_stop) "
-                                    "VALUES (?, ?, ?, ?, ?)",
-                                    (idle_period_dt, datetime.now(), round(_dur_s, 1), db_unit, total_count),
-                                )
-                                _conn.commit()
-                        except Exception as _e:
-                            print(f"[{unit}] IdlePeriods write failed: {_e}")
+                        _serial_db_write(
+                            db_unit, _write_idle_period, unit, db_unit,
+                            idle_period_dt, datetime.now(), round(_dur_s, 1), total_count,
+                        )
                 idle_started   = None
                 idle_period_dt = None
             prev_belt_active = belt_active
@@ -701,7 +784,7 @@ def _plant_worker(
             # Break time (configurable, Friday differs) is excluded from idle
             # accumulation: idle time only ticks up inside shift AND outside
             # the break window.
-            # ── Shape detection (every SHAPE_CHECK_EVERY_N frames) ────────────
+            # ── Shape detection (every SHAPE_CHECK_INTERVAL_S seconds) ────────
             if mode_manager.tick_frame(unit):
                 with _gpu_lock:
                     _sr = shape_model.predict(
@@ -726,13 +809,16 @@ def _plant_worker(
                             _sconf = float(_confs[_bi])
                             if _sconf >= 0.75:
                                 _last_shape_box   = _box.tolist()
-                                _shape_box_expiry = frame_num + SHAPE_CHECK_EVERY_N * 2
+                                # Keep the cached card bbox alive for two check
+                                # intervals, so it still suppresses the card from the
+                                # piece count on the frames between shape checks.
+                                _shape_box_expiry = now + SHAPE_CHECK_INTERVAL_S * 2
                             break   # first valid shape in ROI wins
                 # pieces_in_roi: are there real pieces in the ROI right now,
                 # EXCLUDING the shape card itself?
                 # Re-check track_results against the freshly-updated shape bbox
                 # so the card isn't mistakenly counted as a "piece".
-                if _last_shape_box is not None and frame_num <= _shape_box_expiry:
+                if _last_shape_box is not None and now <= _shape_box_expiry:
                     _pieces_in_roi = any(
                         _in_roi((_b[0]+_b[2])/2.0, (_b[1]+_b[3])/2.0, roi)
                         and SimpleIoUTracker._iou(_b, _last_shape_box) <= 0.3
@@ -750,7 +836,8 @@ def _plant_worker(
 
             if not _is_off_today():
                 count_idle = in_shift and not _in_break()
-                FrameProcessor.process_frame(
+                _serial_db_write(
+                    db_unit, FrameProcessor.process_frame,
                     source_note          = db_unit,
                     total_count          = total_count,
                     belt_active          = belt_active,
@@ -823,6 +910,27 @@ def _plant_worker(
                 cv2.circle(display, (dcx, dcy), _r_inner, dot_color, -1)
                 cv2.circle(display, (dcx, dcy), _r_outer, dot_color, 2)
 
+            # ── Shape-trigger recording (30 s window from first hit) ──────────
+            if mode_manager.is_recording(unit):
+                if _rec_writer is None:
+                    _info = mode_manager.recording_info(unit)
+                    if _info:
+                        _ts_str    = datetime.fromtimestamp(_info[0]).strftime('%Y%m%d_%H%M%S')
+                        _rec_fname = f"{unit}_{_info[1]}_{_ts_str}.mp4"
+                        REC_DIR.mkdir(parents=True, exist_ok=True)
+                        _rec_path   = str(REC_DIR / _rec_fname)
+                        _rec_writer = cv2.VideoWriter(
+                            _rec_path, cv2.VideoWriter_fourcc(*'mp4v'), TARGET_FPS, (dw, dh),
+                        )
+                        print(f"[rec] {unit} → started: {_rec_fname}")
+                if _rec_writer is not None:
+                    _rec_writer.write(display)
+            elif _rec_writer is not None:
+                _rec_writer.release()
+                print(f"[rec] {unit} → saved: {_rec_path}")
+                _rec_writer = None
+                _rec_path   = None
+
             # Put frame into display queue — drop oldest if full (never block inference)
             try:
                 frame_queue.put_nowait(display)
@@ -838,6 +946,11 @@ def _plant_worker(
                 _push_frame(unit, display)
 
         cap.release()
+        if _rec_writer is not None:
+            _rec_writer.release()
+            print(f"[rec] {unit} → saved (source ended): {_rec_path}")
+            _rec_writer = None
+            _rec_path   = None
 
         # Loop videos; streams restart on disconnect
         if is_stream:
@@ -908,6 +1021,7 @@ def main() -> None:
     shape_model.to(DEVICE)
     print(f"[shape] Loaded.\n")
 
+    _cleanup_old_recordings()
     unit_configs = _load_unit_configs()
     stop_event   = threading.Event()
 
@@ -929,6 +1043,18 @@ def main() -> None:
         cv2.waitKey(1)
         cv2.moveWindow(unit, x, y)
         cv2.waitKey(1)
+
+    # Route DB up/down transitions to the dashboard notification system.
+    outbox.on_offline = lambda: _notify(
+        "db_offline", "error", "system",
+        "Database connection lost — pieces and sessions are being buffered locally.")
+    outbox.on_online = lambda: _notify(
+        "db_recovered", "info", "system",
+        "Database connection restored — buffered data flushed.")
+
+    # Start the DB store-and-forward flusher before anything writes, so buffered
+    # metrics from a previous outage (or one that starts now) get replayed.
+    outbox.start()
 
     # Start session manager (polls AppSessions + handles timers)
     session_manager.start()

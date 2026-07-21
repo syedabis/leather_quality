@@ -1,10 +1,12 @@
 "use client";
 import { usePathname } from 'next/navigation';
 import { useState, useEffect } from 'react';
+import { Toaster } from 'sonner';
 import Sidebar from './Sidebar';
 import AuthWrapper from './AuthWrapper';
 import { Header } from './Header';
 import { SidebarContext } from '../contexts/SidebarContext';
+import { NotificationsProvider } from '../contexts/NotificationsContext';
 
 const NO_SIDEBAR_ROUTES = ['/sign-in', '/welcome', '/login'];
 
@@ -36,9 +38,17 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
     </SidebarContext.Provider>
   );
 
-  // Wrap dashboard routes in RBAC gate; leave auth/public pages unwrapped
+  // Wrap dashboard routes in RBAC gate; leave auth/public pages unwrapped.
+  // NotificationsProvider drives the live toast + bell; Toaster renders them.
   if (showSidebar) {
-    return <AuthWrapper>{content}</AuthWrapper>;
+    return (
+      <AuthWrapper>
+        <NotificationsProvider>
+          {content}
+          <Toaster position="top-right" richColors closeButton />
+        </NotificationsProvider>
+      </AuthWrapper>
+    );
   }
 
   return content;

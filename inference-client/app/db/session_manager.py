@@ -15,6 +15,7 @@ from typing import Optional
 
 from app.db.connection import get_connection
 from app.db.mode_manager import mode_manager
+from app.db.outbox import outbox
 
 # ── Tuning constants ───────────────────────────────────────────────────────
 POLL_INTERVAL_S             = 5     # how often to poll AppSessions
@@ -59,8 +60,19 @@ class SessionManager:
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
+    def _reconcile_session_id(self, temp_id: int, real_id: int) -> None:
+        """Outbox callback: an offline-created session was just inserted for real.
+        If it's still live in memory, swap its temp id for the real SessionId so
+        heartbeats and the eventual end hit the right row."""
+        with self._lock:
+            for state in self._state.values():
+                if state is not None and state.session_id == temp_id:
+                    state.session_id = real_id
+                    print(f"[SessionManager] reconciled temp {temp_id} -> session {real_id}")
+
     def start(self) -> None:
         self._stop.clear()
+        outbox.register_session_reconciler(self._reconcile_session_id)
         # Run in the background and keep retrying — a transient DB hiccup right
         # at startup (e.g. SQL Server/network not fully up yet after a reboot)
         # must not let a stuck session silently survive uncleaned. This must
@@ -141,14 +153,17 @@ class SessionManager:
 
     def end_active_session_for_plant(self, plant: str) -> None:
         """End any running accounted or unaccounted session for a plant.
-        Called when a shape card fires 5 hits — the mode takes over."""
+        Called when a shape card fires 5 hits — the mode takes over. Reached
+        from ModeManager.on_shape_result on the hot per-plant capture/
+        inference thread, so the actual DB write is dispatched to its own
+        thread rather than run inline here."""
         with self._lock:
             state = self._state.get(plant)
             if state is None:
                 return
             del self._state[plant]
             self._consec_buffer.pop(plant, None)
-        self._do_end_session_db(state)
+        threading.Thread(target=self._do_end_session_db, args=(state,), daemon=True).start()
         print(f"[SessionManager] {plant} {state.session_type} session {state.session_id} ended — shape card interrupted")
 
     def end_all_active_sessions(self) -> None:
@@ -253,6 +268,9 @@ class SessionManager:
         self, plant: str, start_time: datetime, piece_count: int
     ) -> None:
         """INSERT burst-triggered UNACCOUNTED session with initial piece count."""
+        if not outbox.is_online():
+            self._buffer_session_create(plant, start_time, piece_count)
+            return
         try:
             with get_connection() as conn:
                 cur = conn.cursor()
@@ -277,11 +295,9 @@ class SessionManager:
                     f"for {plant} (start={start_time}, pieces={piece_count})"
                 )
         except Exception as exc:
-            print(f"[SessionManager] Failed to create burst-unaccounted session for {plant}: {exc}")
-            with self._lock:
-                mem = self._state.get(plant)
-                if mem is not None and mem.session_id == -1:
-                    self._state.pop(plant, None)
+            print(f"[SessionManager] Burst create failed, buffering for {plant}: {exc}")
+            outbox.mark_write_failed()
+            self._buffer_session_create(plant, start_time, piece_count)
 
     # ── Background loops ───────────────────────────────────────────────────
 
@@ -304,6 +320,15 @@ class SessionManager:
     # ── Polling logic ──────────────────────────────────────────────────────
 
     def _poll_all_plants(self) -> None:
+        # Skip entirely while the DB is down. The poll only READS accounted
+        # sessions (which can't change during an outage — mobile can't write
+        # either) and writes heartbeats (which self-heal on reconnect since
+        # they SET an absolute count). Skipping avoids a 10 s-blocking connect
+        # every cycle and stops the accounted/unaccounted logic from acting on
+        # a stale, unreadable DB. New pieces meanwhile become buffered
+        # unaccounted sessions, and everything resumes when the DB is back.
+        if not outbox.is_online():
+            return
         sql = """
             SELECT s.SessionId, s.LotNo, s.IssueNoCounter, s.Plant, s.StartTime,
                    s.ExpectedPieces, s.ProcessedPieces,
@@ -468,8 +493,24 @@ class SessionManager:
 
     # ── Session lifecycle helpers ──────────────────────────────────────────
 
+    def _buffer_session_create(self, plant: str, start_time: datetime, initial_pieces: int) -> None:
+        """Buffer an unaccounted-session INSERT to the outbox and give the live
+        state a temp id, so the session survives an outage instead of being
+        dropped. The outbox reconciler swaps the temp id for the real SessionId
+        once the DB is back."""
+        temp_id = outbox.alloc_temp_id()
+        outbox.enqueue_session_create(temp_id, plant, start_time, None, initial_pieces)
+        with self._lock:
+            mem = self._state.get(plant)
+            if mem is not None and mem.session_id == -1:
+                mem.session_id = temp_id
+        print(f"[SessionManager] Unaccounted session buffered (temp {temp_id}) for {plant} - DB offline")
+
     def _create_unaccounted_session(self, plant: str, start_time: datetime) -> None:
         """INSERT unaccounted session into AppSessions, then update in-memory session_id."""
+        if not outbox.is_online():
+            self._buffer_session_create(plant, start_time, 0)
+            return
         try:
             with get_connection() as conn:
                 cur = conn.cursor()
@@ -491,12 +532,10 @@ class SessionManager:
                         mem.session_id = session_id
                 print(f"[SessionManager] Unaccounted session {session_id} created for {plant}")
         except Exception as exc:
-            print(f"[SessionManager] Failed to create unaccounted session for {plant}: {exc}")
-            # Remove the placeholder so the buffer can try again
-            with self._lock:
-                mem = self._state.get(plant)
-                if mem is not None and mem.session_id == -1:
-                    self._state.pop(plant, None)
+            # DB died mid-attempt → buffer instead of dropping the session.
+            print(f"[SessionManager] Create failed, buffering unaccounted for {plant}: {exc}")
+            outbox.mark_write_failed()
+            self._buffer_session_create(plant, start_time, 0)
 
     def _end_session(self, plant: str, state: PlantSessionState) -> None:
         """Remove from memory (with safety check), then write COMPLETED to DB."""
@@ -509,8 +548,17 @@ class SessionManager:
     def _do_end_session_db(self, state: PlantSessionState) -> None:
         """Write EndTime + COMPLETED to DB. Caller must already have removed from _state."""
         if state.session_id == -1:
-            return  # never persisted to DB
+            return  # never persisted (online insert still in flight) — nothing to end
         end_time = datetime.now()
+
+        # Offline → buffer the end so the session doesn't get stuck INPROCESS.
+        # state.session_id may be a temp id (offline-created, resolved on replay)
+        # or a real id (e.g. an accounted session that idled out mid-outage).
+        if not outbox.is_online():
+            outbox.enqueue_session_end(state.session_id, end_time, state.current_count)
+            print(f"[SessionManager] Session end buffered (id {state.session_id}, "
+                  f"{state.session_type}, pieces={state.current_count}) - DB offline")
+            return
         try:
             with get_connection() as conn:
                 cur = conn.cursor()
@@ -528,7 +576,9 @@ class SessionManager:
                 f"({state.session_type}, plant={state.plant}, pieces={state.current_count})"
             )
         except Exception as exc:
-            print(f"[SessionManager] Failed to complete session {state.session_id}: {exc}")
+            print(f"[SessionManager] End write failed, buffering session {state.session_id}: {exc}")
+            outbox.mark_write_failed()
+            outbox.enqueue_session_end(state.session_id, end_time, state.current_count)
 
 
 # ── Module-level singleton ─────────────────────────────────────────────────

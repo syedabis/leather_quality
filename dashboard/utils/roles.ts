@@ -1,15 +1,17 @@
 import { auth } from '@clerk/nextjs/server';
+import { getDashboardAccess } from '../lib/access';
 
 /**
  * checkRole — server-side role check using JWT session claims.
  * Fast: no clerkClient network call needed.
  *
  * NOTE: Clerk maps publicMetadata → sessionClaims.metadata in the JWT.
- * Access via sessionClaims.metadata.role (NOT sessionClaims.publicMetadata.role).
+ * Access via getDashboardAccess(sessionClaims.metadata) (NOT sessionClaims.publicMetadata.role).
  */
 export async function checkRole(role: string): Promise<boolean> {
   const { sessionClaims } = await auth();
-  return sessionClaims?.metadata?.role === role;
+  const access = getDashboardAccess(sessionClaims?.metadata);
+  return access.enabled && access.role === role;
 }
 
 /**

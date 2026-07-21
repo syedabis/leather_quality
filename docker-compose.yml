@@ -22,6 +22,11 @@ services:
       TZ: ${TZ:-Asia/Karachi}
       # Used to derive the Clerk issuer/JWKS URL for verifying session JWTs.
       CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
+      # Notifications live in a flat file (NOT SQL Server, since the point is to
+      # record "DB is down"). Mount it on a volume so alerts survive a restart.
+      NOTIFICATIONS_FILE: /data/notifications.jsonl
+    volumes:
+      - notifications-data:/data
     networks:
       - spray-net
     healthcheck:
@@ -58,3 +63,7 @@ services:
 networks:
   spray-net:
     driver: bridge
+
+volumes:
+  # Persists the backend's notification log across container restarts.
+  notifications-data:

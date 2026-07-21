@@ -61,4 +61,10 @@ def _build_conn_str() -> str:
 
 
 def get_connection() -> pyodbc.Connection:
-    return pyodbc.connect(_build_conn_str(), timeout=10)
+    # Short timeout on purpose: this connects fresh every call (no pooling), and
+    # every write site that can't buffer is holding a hot inference thread until
+    # this either succeeds or gives up. On a healthy LAN a real connect takes
+    # milliseconds; 3s is already generous headroom, and it caps the worst-case
+    # stall (per attempt) to a fraction of the 30s "plant offline" threshold
+    # instead of the old 10s.
+    return pyodbc.connect(_build_conn_str(), timeout=3)

@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Optional
 from app.db.connection import get_connection
+from app.db.outbox import outbox
 
 
 class FrameProcessor:
@@ -15,10 +16,28 @@ class FrameProcessor:
         frame_time_delta_s: float = 0.033,
         idle_sessions_delta: int = 0,
     ) -> bool:
-        try:
-            now        = datetime.now()
-            hour_start = now.replace(minute=0, second=0, microsecond=0)
+        now        = datetime.now()
+        hour_start = now.replace(minute=0, second=0, microsecond=0)
 
+        # Everything the outbox needs to replay this exact write later. hour_start
+        # is captured NOW so a buffered frame lands in the hour it happened, not
+        # the hour it was replayed.
+        payload = {
+            "source_note":        source_note,
+            "hour_start":         hour_start.isoformat(),
+            "piece_delta":        piece_delta,
+            "belt_active":        belt_active,
+            "utilization_pct":    utilization_pct,
+            "frame_time_delta_s": frame_time_delta_s,
+            "idle_sessions_delta": idle_sessions_delta,
+        }
+
+        # DB already known down → skip the (10 s-blocking) connect, just buffer.
+        if not outbox.is_online():
+            outbox.enqueue("metrics", payload)
+            return False
+
+        try:
             with get_connection() as conn:
                 cur = conn.cursor()
                 cur.execute(
@@ -63,7 +82,14 @@ class FrameProcessor:
                 return True
 
         except Exception as e:
-            print(f"❌ DB write error: {e}")
+            # Write failed → flip the shared health flag and buffer this frame so
+            # no pieces are lost. The flusher replays it when the DB comes back.
+            # Plain ASCII only: an emoji here raises UnicodeEncodeError on a
+            # Windows cp1252 console, which would crash the very error path that
+            # is supposed to keep us running through an outage.
+            print(f"[frame] DB write failed, buffering: {e}")
+            outbox.mark_write_failed()
+            outbox.enqueue("metrics", payload)
             return False
 
     @staticmethod
@@ -117,5 +143,5 @@ class FrameProcessor:
                 return True
 
         except Exception as e:
-            print(f"❌ Finalize hour error: {e}")
+            print(f"[frame] Finalize hour error: {e}")
             return False

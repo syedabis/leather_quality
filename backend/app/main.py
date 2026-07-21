@@ -11,9 +11,11 @@ from app.routers.settings import router as settings_router
 from app.routers.reports import router as reports_router
 from app.routers.analytics import router as analytics_router
 from app.routers.sessions import router as sessions_router
+from app.routers.notifications import router as notifications_router
 from app.websocket.live import router as ws_router
 from app.websocket.plants import router as ws_plants_router
 from app.websocket.plant_feed import router as ws_plant_feed_router
+from app.watchdog import start_watchdogs
 
 app = FastAPI(title="SprayPlant API", version="0.3.0")
 
@@ -29,6 +31,7 @@ app.include_router(settings_router)
 app.include_router(reports_router)
 app.include_router(analytics_router)
 app.include_router(sessions_router)
+app.include_router(notifications_router)
 app.include_router(ws_router)
 app.include_router(ws_plants_router)
 app.include_router(ws_plant_feed_router)
@@ -39,9 +42,11 @@ async def startup_event():
     """Initialize schema on startup (safe to call multiple times)."""
     try:
         initialize_schema()
-        print("✅ Database schema initialized")
+        print("Database schema initialized")
     except Exception as e:
-        print(f"⚠️ Schema initialization warning: {e}")
+        print(f"Schema initialization warning: {e}")
+    # Start the plant-offline watchdog + notification pruner.
+    start_watchdogs()
 
 
 @app.get("/health")

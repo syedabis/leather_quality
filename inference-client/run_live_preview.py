@@ -51,8 +51,8 @@ def _is_image(path) -> bool:
 DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 
 # ── Paths ──────────────────────────────────────────────────────────────────
-BASE        = Path(__file__).parent
-MODEL       = BASE / "yolov8s_seg_best.pt"
+BASE         = Path(__file__).parent
+MODEL        = BASE / "yolov8s_seg_best.pt"
 VIDEOS_DIR  = BASE / "videos2"          # fallback local video files (optional)
 CFG_FILE    = BASE / "unit_configs.json"
 TRACKER_CFG = BASE / "bytetrack_conveyor.yaml"
@@ -63,6 +63,22 @@ REC_DIR     = BASE / "recordings"
 TARGET_FPS          = 5        # target inference rate; frames between this and video FPS are skipped
 REC_FPS             = 10.0
 CONF                = 0.70     # default confidence — matches run_all_plants.py production default
+
+# ── Tracking / association tuning ──────────────────────────────────────────
+# Fix 1 — fragment merge: YOLO often splits one leather sheet into 2-3
+#   overlapping boxes. Each fragment used to burn its own track ID (and could
+#   be re-counted). These thresholds decide which raw boxes get merged into a
+#   single union box BEFORE the tracker ever sees them.
+MERGE_IOU_THRESH    = 0.55     # boxes overlapping more than this merge into one
+MERGE_IOMIN_THRESH  = 0.70     # ... or where one box is mostly inside the other
+# Fix 2 — centroid association: at low FPS a piece can travel far enough
+#   between processed frames that IoU with its own previous box drops below the
+#   gate, so the tracker mints a NEW id for a piece it is already tracking and
+#   the ROI counter counts it twice. A second matching pass links a detection
+#   to a track when its centroid moved less than CENTER_GATE_RATIO × the track
+#   box diagonal, provided the two boxes are a plausible size match.
+CENTER_GATE_RATIO   = 0.60     # centroid may move this × the track box diagonal
+AREA_RATIO_GATE     = 2.5      # ... and areas must be within this factor
 DISPLAY_W           = 1280
 DISPLAY_H           = 720
 WINDOW_NAME         = "Leather Detection"
@@ -199,6 +215,22 @@ def _in_roi(cx: float, cy: float, roi: dict) -> bool:
             roi["y"] <= cy <= roi["y"] + roi["h"])
 
 
+def _unique_path(path: Path) -> Path:
+    """Return `path` unchanged if free, else append _2, _3, … until unused.
+
+    Recordings from a previous run must never be silently overwritten —
+    each run gets its own file so results stay comparable across runs.
+    """
+    if not path.exists():
+        return path
+    n = 2
+    while True:
+        candidate = path.parent / f"{path.stem}_{n}{path.suffix}"
+        if not candidate.exists():
+            return candidate
+        n += 1
+
+
 # ── Data classes ───────────────────────────────────────────────────────────
 
 @dataclass
@@ -257,9 +289,11 @@ class RunSummary:
 # already-active track.
 
 class SimpleIoUTracker:
-    def __init__(self, iou_thresh: float = 0.25, max_age: int = 20):
+    def __init__(self, iou_thresh: float = 0.25, max_age: int = 20,
+                 center_gate_ratio: float = CENTER_GATE_RATIO):
         self.iou_thresh = iou_thresh  # min IoU to link a detection to an existing track
         self.max_age    = max_age     # frames before an unmatched track is deleted
+        self.center_gate_ratio = center_gate_ratio  # motion tolerance for the 2nd pass
         self._next_id   = 1
         self._tracks: dict[int, dict] = {}  # id → {"box": [x1,y1,x2,y2], "age": int}
 
@@ -274,20 +308,47 @@ class SimpleIoUTracker:
         area_b = (b[2] - b[0]) * (b[3] - b[1])
         return inter / (area_a + area_b - inter)
 
+    @staticmethod
+    def _center_dist(a, b) -> float:
+        acx, acy = (a[0] + a[2]) / 2.0, (a[1] + a[3]) / 2.0
+        bcx, bcy = (b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0
+        return ((acx - bcx) ** 2 + (acy - bcy) ** 2) ** 0.5
+
+    @staticmethod
+    def _diag(b) -> float:
+        return max(1.0, ((b[2] - b[0]) ** 2 + (b[3] - b[1]) ** 2) ** 0.5)
+
+    @staticmethod
+    def _size_compatible(a, b) -> bool:
+        """Reject a centroid match when the two boxes are wildly different sizes.
+
+        Without this, a small fragment box could latch onto a large piece's
+        track just because their centres happen to be close.
+        """
+        area_a = max(1.0, (a[2] - a[0]) * (a[3] - a[1]))
+        area_b = max(1.0, (b[2] - b[0]) * (b[3] - b[1]))
+        return max(area_a, area_b) / min(area_a, area_b) <= AREA_RATIO_GATE
+
     def reset(self):
         self._tracks.clear()
 
     def update(self, boxes: list) -> list[tuple[int, list]]:
         """
-        Match detections to existing tracks (greedy, highest IoU first).
-        Unmatched detections always get a new ID immediately.
+        Two-pass association:
+          Pass 1 — IoU (strict). Links a detection that still overlaps its track.
+          Pass 2 — centroid distance, gated by box diagonal and size similarity.
+                   Recovers pieces that moved too far between processed frames
+                   for IoU to hold. Without this the tracker mints a NEW id for
+                   a piece it is already tracking, and the ROI counter counts it
+                   a second time — the main source of overcounting.
 
+        Only detections that match neither pass get a brand-new ID.
         Returns list of (track_id, [x1, y1, x2, y2]) for every detection.
         """
         matched_tids: set[int] = set()
         det_to_tid: dict[int, int] = {}
 
-        # Greedy match: for each detection find best overlapping track
+        # ── Pass 1 — IoU association ──────────────────────────────────────
         for di, box in enumerate(boxes):
             best_iou = self.iou_thresh
             best_tid = None
@@ -302,12 +363,34 @@ class SimpleIoUTracker:
                 det_to_tid[di]  = best_tid
                 matched_tids.add(best_tid)
 
+        # ── Pass 2 — centroid association for what IoU missed ─────────────
+        for di, box in enumerate(boxes):
+            if di in det_to_tid:
+                continue
+            best_dist = None
+            best_tid  = None
+            for tid, trk in self._tracks.items():
+                if tid in matched_tids:
+                    continue
+                trk_box = trk["box"]
+                if not self._size_compatible(box, trk_box):
+                    continue
+                dist = self._center_dist(box, trk_box)
+                if dist > self._diag(trk_box) * self.center_gate_ratio:
+                    continue
+                if best_dist is None or dist < best_dist:
+                    best_dist = dist
+                    best_tid  = tid
+            if best_tid is not None:
+                det_to_tid[di]  = best_tid
+                matched_tids.add(best_tid)
+
         # Update matched tracks
         for di, tid in det_to_tid.items():
             self._tracks[tid]["box"] = boxes[di]
             self._tracks[tid]["age"] = 0
 
-        # New tracks for every unmatched detection
+        # New tracks only for detections neither pass could claim
         for di, box in enumerate(boxes):
             if di not in det_to_tid:
                 tid = self._next_id
@@ -387,6 +470,65 @@ def _suppress_overlapping_tracks(
     return kept
 
 
+def _iomin(a, b) -> float:
+    """Intersection over the SMALLER box's area — catches containment that IoU misses."""
+    ix1 = max(a[0], b[0]); iy1 = max(a[1], b[1])
+    ix2 = min(a[2], b[2]); iy2 = min(a[3], b[3])
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    if inter == 0.0:
+        return 0.0
+    area_a = max(1.0, (a[2] - a[0]) * (a[3] - a[1]))
+    area_b = max(1.0, (b[2] - b[0]) * (b[3] - b[1]))
+    return inter / min(area_a, area_b)
+
+
+def _merge_fragment_boxes(boxes: list, confs: list) -> tuple[list, list]:
+    """Collapse YOLO boxes belonging to the same physical piece into one union box.
+
+    YOLO regularly splits a single leather sheet into 2-3 overlapping boxes.
+    Previously each fragment reached the tracker and burned its own track ID —
+    `_suppress_overlapping_tracks` hid the duplicates from the result, but the
+    ID was already consumed and the ghost track lingered for max_age frames.
+    Merging here means the tracker only ever sees one box per piece.
+
+    Merging repeats until stable so a chain of fragments (a-b, b-c) collapses
+    into a single box. The merged box keeps the highest confidence of its parts.
+    """
+    if len(boxes) <= 1:
+        return list(boxes), list(confs)
+
+    cur_boxes = [list(b) for b in boxes]
+    cur_confs = list(confs) if confs else [0.0] * len(boxes)
+
+    changed = True
+    while changed:
+        changed = False
+        out_boxes: list[list] = []
+        out_confs: list[float] = []
+        consumed: set[int] = set()
+        for i in range(len(cur_boxes)):
+            if i in consumed:
+                continue
+            box  = list(cur_boxes[i])
+            conf = cur_confs[i]
+            for j in range(i + 1, len(cur_boxes)):
+                if j in consumed:
+                    continue
+                other = cur_boxes[j]
+                if (SimpleIoUTracker._iou(box, other) > MERGE_IOU_THRESH
+                        or _iomin(box, other) > MERGE_IOMIN_THRESH):
+                    box = [min(box[0], other[0]), min(box[1], other[1]),
+                           max(box[2], other[2]), max(box[3], other[3])]
+                    conf = max(conf, cur_confs[j])
+                    consumed.add(j)
+                    changed = True
+            out_boxes.append(box)
+            out_confs.append(conf)
+        cur_boxes, cur_confs = out_boxes, out_confs
+
+    return cur_boxes, cur_confs
+
+
 # ── Core inference loop ────────────────────────────────────────────────────
 
 def _reset_track_state(model: YOLO) -> None:
@@ -455,7 +597,7 @@ def run_video(model: YOLO, video_source, unit: str,
     rec_path   = None
     if record and writer is None:
         REC_DIR.mkdir(parents=True, exist_ok=True)
-        rec_path  = rec_path_override or (REC_DIR / f"{unit}.mp4")
+        rec_path  = _unique_path(rec_path_override or (REC_DIR / f"{unit}.mp4"))
         writer    = cv2.VideoWriter(str(rec_path), cv2.VideoWriter_fourcc(*"mp4v"), REC_FPS, (DISPLAY_W, DISPLAY_H))
         own_writer = True
         print(f"  Recording → {rec_path.name}")
@@ -519,6 +661,13 @@ def run_video(model: YOLO, video_source, unit: str,
         result     = results[0]
         boxes_xyxy = result.boxes.xyxy.cpu().numpy().tolist() if result.boxes is not None and len(result.boxes) > 0 else []
         confs_list = result.boxes.conf.cpu().numpy().tolist() if result.boxes is not None and len(result.boxes) > 0 else []
+
+        # Fix 1 — collapse fragment boxes BEFORE tracking so one piece = one box
+        # and the tracker never mints (or re-counts) an ID for a fragment.
+        _raw_box_count = len(boxes_xyxy)
+        boxes_xyxy, confs_list = _merge_fragment_boxes(boxes_xyxy, confs_list)
+        _merged_away = _raw_box_count - len(boxes_xyxy)
+
         _box_to_conf = {tuple(int(v) for v in b): c for b, c in zip(boxes_xyxy, confs_list)}
 
         track_results   = _suppress_overlapping_tracks(tracker.update(boxes_xyxy))   # [(tid, box), ...]
@@ -638,6 +787,17 @@ def run_video(model: YOLO, video_source, unit: str,
                       (10 + dtw + _pad, _ty + _pad),
                       (0, 0, 0), -1)
         cv2.putText(display, _dt, (10, _ty), _f, _fs, (255, 255, 255), _ft)
+
+        # Second line: fragment-merge activity (only when a merge actually fired)
+        if _merged_away > 0:
+            _mg = f"merged {_raw_box_count} boxes -> {len(boxes_xyxy)}"
+            (mgw, mgh), _ = cv2.getTextSize(_mg, _f, 0.5, 1)
+            _my = _ty + mgh + 12
+            cv2.rectangle(display,
+                          (10 - _pad, _my - mgh - _pad),
+                          (10 + mgw + _pad, _my + _pad),
+                          (0, 0, 0), -1)
+            cv2.putText(display, _mg, (10, _my), _f, 0.5, (0, 255, 255), 1)
 
         # Right: "SP-XX " white | "(Active/Downtime)" green/red | "  Count: N" white
         _st_str   = "Active" if belt_active else "Downtime"
@@ -804,6 +964,7 @@ def run_image(model: YOLO, image_path, unit: str,
 
     boxes_xyxy   = result.boxes.xyxy.cpu().numpy().tolist() if result.boxes is not None and len(result.boxes) > 0 else []
     confs_list   = result.boxes.conf.cpu().numpy().tolist() if result.boxes is not None and len(result.boxes) > 0 else []
+    boxes_xyxy, confs_list = _merge_fragment_boxes(boxes_xyxy, confs_list)
     _box_to_conf = {tuple(int(v) for v in b): c for b, c in zip(boxes_xyxy, confs_list)}
     tracker      = SimpleIoUTracker(iou_thresh=0.25, max_age=20)
     counter      = RoiCounter()
@@ -1134,8 +1295,12 @@ def main() -> None:
               f"({torch.cuda.get_device_properties(0).total_memory // 1024**2} MB VRAM)")
 
     model       = YOLO(str(model_path))
-    model.to(DEVICE)   # move weights to GPU once at load time
+    model.to(DEVICE)
     cap_seconds = args.max_seconds if args.max_seconds and args.max_seconds > 0 else None
+
+    print(f"[track] Fragment merge : IoU>{MERGE_IOU_THRESH}  IoMin>{MERGE_IOMIN_THRESH}")
+    print(f"[track] Centroid gate  : {CENTER_GATE_RATIO}x box diagonal  "
+          f"(area ratio <= {AREA_RATIO_GATE})")
 
     if args.all:
         run_all(model, max_seconds=cap_seconds, record=args.record)

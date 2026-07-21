@@ -4,10 +4,11 @@ import { useUser, useClerk } from '@clerk/nextjs';
 import { FaBars, FaTimes } from 'react-icons/fa';
 import {
   FiGrid, FiMap, FiVideo, FiList,
-  FiFileText, FiSettings, FiLogOut, FiUsers,
+  FiFileText, FiSettings, FiLogOut, FiUsers, FiBell,
 } from 'react-icons/fi';
 import NavItem from './nav/NavItem';
 import type { IconType } from 'react-icons';
+import { getDashboardAccess } from '../lib/access';
 
 interface NavEntry {
   href: string;
@@ -22,6 +23,7 @@ const NAV: NavEntry[] = [
   { href: '/monitoring', icon: FiVideo,    label: 'Monitoring', adminOnly: true },
   { href: '/sessions',   icon: FiList,      label: 'Sessions'   },
   { href: '/reports',    icon: FiFileText,  label: 'Reports'    },
+  { href: '/notifications', icon: FiBell,   label: 'Notifications' },
   { href: '/users',      icon: FiUsers,     label: 'Users',     adminOnly: true },
 ];
 
@@ -40,7 +42,7 @@ const Sidebar = ({ collapsed, setCollapsed }: SidebarProps) => {
     ? `${user.firstName}${user.lastName ? ` ${user.lastName[0]}.` : ''}`
     : user?.primaryEmailAddress?.emailAddress?.split('@')[0] ?? '…';
 
-  const role = user?.publicMetadata?.role as string | undefined;
+  const role = getDashboardAccess(user?.publicMetadata).role ?? undefined;
 
   return (
     <div className={`fixed left-0 top-0 h-screen bg-sidebar text-sidebar-foreground flex flex-col

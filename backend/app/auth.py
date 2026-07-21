@@ -48,7 +48,18 @@ def get_current_claims(authorization: str | None = Header(None)) -> dict:
     return claims
 
 
+def _dashboard_role(claims: dict) -> str | None:
+    """Mirrors dashboard/lib/access.ts getDashboardAccess() — nested
+    metadata.dashboard.role, falling back to the legacy flat metadata.role
+    for accounts created before the dashboard/mobile access split."""
+    metadata = claims.get("metadata", {}) or {}
+    dashboard = metadata.get("dashboard")
+    if dashboard:
+        return dashboard.get("role") if dashboard.get("enabled") else None
+    return metadata.get("role")
+
+
 def require_admin(claims: dict = Depends(get_current_claims)) -> dict:
-    if claims.get("metadata", {}).get("role") != "admin":
+    if _dashboard_role(claims) != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     return claims

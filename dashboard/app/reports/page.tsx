@@ -90,15 +90,28 @@ function Card({ children }: { children: React.ReactNode }) {
 
 function Th({ children }: { children: React.ReactNode }) {
   return (
-    <th className="px-4 py-3 text-center text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase whitespace-nowrap">
+    <th className="px-3 py-3 text-center text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase">
       {children}
     </th>
   );
 }
 
-function Td({ children, className = '', colSpan }: { children?: React.ReactNode; className?: string; colSpan?: number }) {
+// nowrap defaults to true — right for short cells (times, counts, durations).
+// Pass nowrap={false} on free-text columns (party, article, colour) so a long
+// value wraps onto a second line instead of forcing the whole table wider than
+// the viewport. `title` surfaces the untruncated text on hover.
+function Td({ children, className = '', colSpan, title, nowrap = true }: {
+  children?: React.ReactNode; className?: string; colSpan?: number;
+  title?: string; nowrap?: boolean;
+}) {
   return (
-    <td colSpan={colSpan} className={`px-4 py-2 text-center text-sm whitespace-nowrap ${className}`}>{children}</td>
+    <td
+      colSpan={colSpan}
+      title={title}
+      className={`px-3 py-2 text-center text-sm ${nowrap ? 'whitespace-nowrap' : 'wrap-break-word'} ${className}`}
+    >
+      {children}
+    </td>
   );
 }
 
@@ -317,8 +330,26 @@ function DailyDetailTab() {
                 Last session ended: <span className="font-medium text-gray-700 dark:text-gray-200">{pd.session_end}</span>
               </p>
             )}
+            {/* table-fixed + colgroup: the columns share the container width instead
+                of the table sizing itself to its widest cell. Without this the long
+                free-text values (party / colour) push the table past the viewport at
+                every zoom level, so the horizontal scrollbar never goes away. */}
             <div className="overflow-x-auto w-full">
-              <table className="min-w-max w-full text-xs">
+              <table className="w-full table-fixed text-xs">
+                <colgroup>
+                  <col style={{ width: '8%'   }} />{/* Lot No       */}
+                  <col style={{ width: '8%'   }} />{/* Order No     */}
+                  <col style={{ width: '15%'  }} />{/* Party Name   */}
+                  <col style={{ width: '10%'  }} />{/* Article      */}
+                  <col style={{ width: '12%'  }} />{/* Colour       */}
+                  <col style={{ width: '5%'   }} />{/* PCS          */}
+                  <col style={{ width: '5%'   }} />{/* Plant        */}
+                  <col style={{ width: '6%'   }} />{/* Start        */}
+                  <col style={{ width: '6%'   }} />{/* End          */}
+                  <col style={{ width: '8%'   }} />{/* Duration     */}
+                  <col style={{ width: '8.5%' }} />{/* Active Time  */}
+                  <col style={{ width: '8.5%' }} />{/* Session Idle */}
+                </colgroup>
                 <thead className="bg-gray-50 dark:bg-[#1a1a1a]">
                   <tr>
                     {['Lot No','Order No','Party Name','Article','Colour','PCS','Plant','Start','End','Duration','Active Time','Session Idle'].map(h=><Th key={h}>{h}</Th>)}
@@ -337,10 +368,10 @@ function DailyDetailTab() {
                             <span className="px-2 py-0.5 rounded text-xs font-bold bg-red-500 text-white">{row.lot_no}</span>
                           ) : row.lot_no}
                         </Td>
-                        <Td className="text-gray-600 dark:text-gray-400">{row.order_no}</Td>
-                        <Td className="text-gray-700 dark:text-gray-300">{row.party_name}</Td>
-                        <Td className="text-gray-700 dark:text-gray-300">{row.article_name}</Td>
-                        <Td className="text-gray-700 dark:text-gray-300">{row.colour_name}</Td>
+                        <Td nowrap={false} title={row.order_no}     className="text-gray-600 dark:text-gray-400">{row.order_no}</Td>
+                        <Td nowrap={false} title={row.party_name}   className="text-gray-700 dark:text-gray-300">{row.party_name}</Td>
+                        <Td nowrap={false} title={row.article_name} className="text-gray-700 dark:text-gray-300">{row.article_name}</Td>
+                        <Td nowrap={false} title={row.colour_name}  className="text-gray-700 dark:text-gray-300">{row.colour_name}</Td>
                         <Td className="font-semibold text-gray-900 dark:text-white">{row.pieces?.toLocaleString()}</Td>
                         <Td className="text-gray-500 dark:text-gray-400">{row.plant}</Td>
                         <Td className="text-gray-700 dark:text-gray-300">{row.start_time}</Td>
