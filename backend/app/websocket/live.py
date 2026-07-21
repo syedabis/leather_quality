@@ -51,7 +51,14 @@ async def ws_counts(websocket: WebSocket):
     try:
         while True:
             try:
-                data = queries.get_latest_counts()
+                # get_latest_counts() does blocking pyodbc I/O — running it
+                # inline here (this is an async def handler, so FastAPI does
+                # NOT thread it automatically the way it does for sync routes)
+                # would stall the single event loop for every other request
+                # and websocket on the server, not just this one, for as long
+                # as the DB call takes. asyncio.to_thread keeps the blocking
+                # work off the loop.
+                data = await asyncio.to_thread(queries.get_latest_counts)
                 payload = json.dumps(data)
                 await websocket.send_text(payload)
             except Exception as exc:

@@ -60,7 +60,12 @@ def _build_conn_str() -> str:
 
 
 def get_connection() -> pyodbc.Connection:
-    return pyodbc.connect(_build_conn_str(), timeout=10)
+    # Short timeout matters here: ws_plants/ws_counts poll this every 3s from
+    # an async def handler, and this backend runs as a single uvicorn worker
+    # (one event loop). Those blocking calls now run via asyncio.to_thread,
+    # but a 10s+ hang per attempt still starves the thread pool fast when the
+    # DB is down. 3s mirrors inference-client/app/db/connection.py.
+    return pyodbc.connect(_build_conn_str(), timeout=3)
 
 
 def test_connection() -> dict:
