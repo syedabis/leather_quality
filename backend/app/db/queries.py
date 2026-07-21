@@ -441,12 +441,22 @@ def get_plant_states() -> list[dict]:
         GROUP BY source_note
     """
 
-    with get_connection() as conn:
-        cur = conn.cursor()
-        cur.execute(sql)
-        rows: dict[str, tuple] = {}
-        for r in cur.fetchall():
-            rows[r[0]] = r
+    # Every other DB call in this function (_get_break_window,
+    # _get_active_session_starts, _is_holiday_today, _is_weekly_off_today,
+    # _batch_session_metrics below) already degrades gracefully on failure.
+    # This was the one unguarded query — a DB outage raised out of here,
+    # which aborted the whole function before even the per-unit "no row"
+    # fallback below could run, taking Floor View/plant status down with it
+    # instead of just marking every plant offline like the rest of the app does.
+    rows: dict[str, tuple] = {}
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(sql)
+            for r in cur.fetchall():
+                rows[r[0]] = r
+    except Exception as exc:
+        print(f"[queries] get_plant_states error (treating all units offline): {exc}")
 
     # Batch-fetch session metrics for all units in 3 queries instead of 6×3
     today_str    = datetime.now().date().isoformat()
