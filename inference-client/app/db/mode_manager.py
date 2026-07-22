@@ -465,13 +465,14 @@ class ModeManager:
         except Exception:
             pass
 
-    def force_end_mode(self, plant: str) -> None:
+    def force_end_mode(self, plant: str, reason: str = "new session started") -> None:
         """
         End WHATEVER mode is active — WASHING, COLOR_MATCHING, or MAINTENANCE —
-        immediately when a new production session (accounted or unaccounted)
-        starts. No mode survives a new session start; MAINTENANCE previously
-        required an explicit Arrow, which let it silently swallow every piece
-        of a new LOT if the Arrow was never shown.
+        immediately, regardless of that mode's own end condition. Used both
+        when a new production session starts (no mode survives that; MAINTENANCE
+        previously required an explicit Arrow, which let it silently swallow
+        every piece of a new LOT if the Arrow was never shown) and when a break
+        window starts (run_all_plants.py's break-edge check).
         """
         with self._lock:
             state = self._states.get(plant)
@@ -479,7 +480,7 @@ class ModeManager:
                 return
             del self._states[plant]
         self._end_session_db(state, datetime.now())
-        print(f"[ModeManager] {plant} {state.mode} ended — new session started")
+        print(f"[ModeManager] {plant} {state.mode} ended — {reason}")
 
     def end_all_active_modes(self) -> None:
         """Graceful shutdown — close any open mode sessions with accurate EndTime."""

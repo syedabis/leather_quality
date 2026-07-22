@@ -15,6 +15,7 @@ from app.routers.notifications import router as notifications_router
 from app.websocket.live import router as ws_router
 from app.websocket.plants import router as ws_plants_router
 from app.websocket.plant_feed import router as ws_plant_feed_router
+from app.live_state import router as live_state_router
 from app.watchdog import start_watchdogs
 
 app = FastAPI(title="SprayPlant API", version="0.3.0")
@@ -35,6 +36,7 @@ app.include_router(notifications_router)
 app.include_router(ws_router)
 app.include_router(ws_plants_router)
 app.include_router(ws_plant_feed_router)
+app.include_router(live_state_router)
 
 
 @app.on_event("startup")

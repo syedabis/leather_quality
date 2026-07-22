@@ -235,6 +235,85 @@ def _notify(ntype: str, severity: str, source: str, message: str) -> None:
     _push_pool.submit(_post)
 
 
+# ── Live-state fallback push (DB-outage only) ──────────────────────────────
+# Floor View's piece/session data normally comes entirely from the backend
+# querying SQL Server. During an outage that leaves it with nothing to show,
+# even though this process knows the real numbers the whole time -- there
+# was no channel for them other than the DB, unlike camera frames, which
+# already bypass it via _push_frame above. This is that channel, used ONLY
+# while outbox.is_online() is False, so it never runs -- and never overrides
+# real DB-sourced data on the backend -- while the DB is fine.
+LIVE_STATE_PUSH_INTERVAL_S = 3.0
+_live_state_last_push: dict[str, float] = {}
+
+
+def _build_live_state_payload(unit: str, total_count: int, belt_active: bool) -> dict:
+    mode_state = mode_manager.get_state(unit)
+    if mode_state is not None:
+        return {
+            "total_count":     total_count,
+            "belt_active":     belt_active,
+            "has_session":     True,
+            "session_type":    mode_state.mode,
+            "type":            None,
+            "lot_no":          None,
+            "expected_pieces": None,
+            "current_pieces":  mode_state.piece_count,
+            "order_no":        None,
+            "article_name":    None,
+            "colour_name":     None,
+            "party_name":      None,
+            "start_time":      mode_state.start_time.isoformat(),
+        }
+    sess = session_manager.get_state(unit)
+    if sess is not None:
+        return {
+            "total_count":     total_count,
+            "belt_active":     belt_active,
+            "has_session":     True,
+            "session_type":    "PRODUCTION",
+            "type":            sess.session_type,
+            "lot_no":          sess.lot_no,
+            "expected_pieces": sess.expected_pieces,
+            "current_pieces":  sess.current_count,
+            "order_no":        sess.order_no,
+            "article_name":    sess.article_name,
+            "colour_name":     sess.colour_name,
+            "party_name":      sess.party_name,
+            "start_time":      sess.start_time.isoformat(),
+        }
+    return {"total_count": total_count, "belt_active": belt_active, "has_session": False}
+
+
+def _push_live_state(plant_id: str, payload: dict) -> None:
+    if not BACKEND_URL:
+        return
+
+    def _post():
+        try:
+            requests.post(
+                f"{BACKEND_URL}/api/live-state/{plant_id}",
+                json=payload,
+                timeout=1.5,
+            )
+        except Exception:
+            pass
+
+    _push_pool.submit(_post)
+
+
+def _maybe_push_live_state(unit: str, now: float, total_count: int, belt_active: bool) -> None:
+    """Throttled to LIVE_STATE_PUSH_INTERVAL_S per plant, and only fires at
+    all while the DB is actually unreachable."""
+    if outbox.is_online():
+        return
+    last = _live_state_last_push.get(unit, 0.0)
+    if now - last < LIVE_STATE_PUSH_INTERVAL_S:
+        return
+    _live_state_last_push[unit] = now
+    _push_live_state(unit, _build_live_state_payload(unit, total_count, belt_active))
+
+
 # ── Settings helpers ──────────────────────────────────────────────────────
 
 def _load_settings() -> dict:
@@ -624,6 +703,7 @@ def _plant_worker(
     last_detection_time = time.time()
     belt_active         = True
     prev_belt_active    = True
+    prev_in_break       = _in_break()  # seeded so starting mid-break doesn't fire a false edge
     new_idle_session    = 0
     frames_pushed       = 0
     idle_started        = None   # time.time() when idle began (for duration calc)
@@ -784,6 +864,17 @@ def _plant_worker(
             # Break time (configurable, Friday differs) is excluded from idle
             # accumulation: idle time only ticks up inside shift AND outside
             # the break window.
+
+            # Break just started (checked dynamically from DB via
+            # _refresh_dynamic_state, same as everywhere else break is used):
+            # WASHING/COLOR_MATCHING/MAINTENANCE do not otherwise end on their
+            # own for a break the way they end on a new production session or
+            # an Arrow card, so force them closed here. Everything else about
+            # these modes (idle timeout, piece-burst end, Arrow) is unchanged.
+            in_break_now = _in_break()
+            if in_break_now and not prev_in_break and mode_manager.has_active_mode(unit):
+                mode_manager.force_end_mode(unit, reason="break started")
+            prev_in_break = in_break_now
             # ── Shape detection (every SHAPE_CHECK_INTERVAL_S seconds) ────────
             if mode_manager.tick_frame(unit):
                 with _gpu_lock:
@@ -851,6 +942,7 @@ def _plant_worker(
                         mode_manager.on_piece_detected(unit, datetime.now())
                     else:
                         session_manager.on_piece_detected(unit, datetime.now())
+                _maybe_push_live_state(unit, now, total_count, belt_active)
             new_idle_session = 0
 
             # ── Render display frame (full original resolution) ────────────

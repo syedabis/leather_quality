@@ -10,6 +10,7 @@ import json
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.db import queries
+from app.live_state import get_live_state
 
 router = APIRouter()
 
@@ -23,6 +24,34 @@ def _fetch_plants_batch() -> list:
     active_sessions = queries.get_active_sessions()
     for state in states:
         state["active_session"] = active_sessions.get(state.get("plant_id"))
+
+        # DB-sourced data says this plant is offline/stale -- inference-client
+        # only pushes to live_state while ITS OWN DB connection is down, so a
+        # fresh entry here means a real outage, not a genuinely offline plant.
+        # Real DB data always wins when it's actually online; this only fills
+        # the gap an outage leaves instead of showing "no data".
+        if not state.get("online"):
+            live = get_live_state(state["plant_id"])
+            if live is not None:
+                state["online"]      = True
+                state["belt_active"] = live["belt_active"]
+                state["total_count"] = live["total_count"]
+                if live["has_session"]:
+                    state["active_session"] = {
+                        "session_id":      None,
+                        "lot_no":          live["lot_no"],
+                        "plant":           state["plant_id"],
+                        "start_time":      live["start_time"],
+                        "expected_pieces": live["expected_pieces"],
+                        "current_pieces":  live["current_pieces"],
+                        "type":            live["type"],
+                        "session_type":    live["session_type"],
+                        "order_no":        live["order_no"],
+                        "article_name":    live["article_name"],
+                        "colour_name":     live["colour_name"],
+                        "party_name":      live["party_name"],
+                        "pk_code":         None,
+                    }
     return states
 
 
