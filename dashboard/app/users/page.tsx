@@ -455,7 +455,7 @@ export default function Users() {
                     <th className="px-3 py-2 text-left font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Email</th>
                     <th className="px-3 py-2 text-left font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Dashboard</th>
                     <th className="px-3 py-2 text-left font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Mobile</th>
-                    <th className="px-3 py-2 w-24" />
+                    <th className="px-3 py-2 min-w-24" />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-[#2c2c2c]">
@@ -474,7 +474,7 @@ export default function Users() {
                           <td className="px-3 py-2"><MobileBadge m={u.mobile} /></td>
                           <td className="px-3 py-2 text-right">
                             {confirmDeleteId === u.id ? (
-                              <div className="flex items-center justify-end gap-2">
+                              <div className="flex items-center justify-end gap-2 whitespace-nowrap">
                                 <span className="text-[10px] text-red-500 font-medium">Delete?</span>
                                 <button onClick={() => setConfirmDeleteId(null)} className="text-[10px] text-gray-500 hover:text-gray-700 font-medium">
                                   Cancel
