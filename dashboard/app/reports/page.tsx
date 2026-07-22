@@ -339,11 +339,10 @@ function DailyDetailTab() {
                 <colgroup>
                   <col style={{ width: '8%'   }} />{/* Lot No       */}
                   <col style={{ width: '8%'   }} />{/* Order No     */}
-                  <col style={{ width: '15%'  }} />{/* Party Name   */}
+                  <col style={{ width: '20%'  }} />{/* Party Name   */}
                   <col style={{ width: '10%'  }} />{/* Article      */}
                   <col style={{ width: '12%'  }} />{/* Colour       */}
                   <col style={{ width: '5%'   }} />{/* PCS          */}
-                  <col style={{ width: '5%'   }} />{/* Plant        */}
                   <col style={{ width: '6%'   }} />{/* Start        */}
                   <col style={{ width: '6%'   }} />{/* End          */}
                   <col style={{ width: '8%'   }} />{/* Duration     */}
@@ -352,7 +351,7 @@ function DailyDetailTab() {
                 </colgroup>
                 <thead className="bg-gray-50 dark:bg-[#1a1a1a]">
                   <tr>
-                    {['Lot No','Order No','Party Name','Article','Colour','PCS','Plant','Start','End','Duration','Active Time','Session Idle'].map(h=><Th key={h}>{h}</Th>)}
+                    {['Lot No','Order No','Party Name','Article','Colour','PCS','Start','End','Duration','Active Time','Session Idle'].map(h=><Th key={h}>{h}</Th>)}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-white/5">
@@ -373,7 +372,6 @@ function DailyDetailTab() {
                         <Td nowrap={false} title={row.article_name} className="text-gray-700 dark:text-gray-300">{row.article_name}</Td>
                         <Td nowrap={false} title={row.colour_name}  className="text-gray-700 dark:text-gray-300">{row.colour_name}</Td>
                         <Td className="font-semibold text-gray-900 dark:text-white">{row.pieces?.toLocaleString()}</Td>
-                        <Td className="text-gray-500 dark:text-gray-400">{row.plant}</Td>
                         <Td className="text-gray-700 dark:text-gray-300">{row.start_time}</Td>
                         <Td className="text-gray-700 dark:text-gray-300">{row.end_time}</Td>
                         <Td className="text-gray-700 dark:text-gray-300">{row.duration_label}</Td>
@@ -388,7 +386,6 @@ function DailyDetailTab() {
                       <>
                         <tr key={ri} className="bg-purple-50 dark:bg-purple-900/10">
                           <Td colSpan={6} className="font-semibold text-purple-700 dark:text-purple-400 text-left pl-4">{row.label}</Td>
-                          <Td className="text-purple-600 dark:text-purple-500" />
                           <Td className="text-purple-700 dark:text-purple-400">{row.start_time}</Td>
                           <Td className="text-purple-700 dark:text-purple-400">{row.end_time}</Td>
                           <Td className="text-purple-700 dark:text-purple-400">{row.duration_label}</Td>
@@ -407,7 +404,6 @@ function DailyDetailTab() {
                             </Td>
                             <Td className="text-gray-400 dark:text-gray-600" colSpan={4}>— during break —</Td>
                             <Td className="font-semibold text-gray-700 dark:text-gray-300">{sr.pieces.toLocaleString()}</Td>
-                            <Td className="text-gray-500 dark:text-gray-400">{sr.plant}</Td>
                             <Td className="text-gray-600 dark:text-gray-400">{sr.start_time}</Td>
                             <Td className="text-gray-600 dark:text-gray-400">{sr.end_time}</Td>
                             <Td className="text-gray-600 dark:text-gray-400">{sr.duration_label}</Td>
@@ -418,7 +414,6 @@ function DailyDetailTab() {
                     ) : (
                       <tr key={ri} className="bg-amber-50 dark:bg-amber-900/10">
                         <Td colSpan={6} className="font-semibold text-amber-700 dark:text-amber-400 text-left pl-4">{row.label}</Td>
-                        <Td className="text-amber-600 dark:text-amber-500" />
                         <Td className="text-amber-700 dark:text-amber-400">{row.start_time}</Td>
                         <Td className="text-amber-700 dark:text-amber-400">{row.end_time}</Td>
                         <Td className="text-amber-700 dark:text-amber-400">{row.duration_label}</Td>
