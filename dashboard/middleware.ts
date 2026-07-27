@@ -41,7 +41,15 @@ export default clerkMiddleware(
       return NextResponse.redirect(new URL('/overview', req.url));
     }
   },
-  { clockSkewInMs: 60000 },
+  // Bumped from 60s: the plant PC's clock isn't NTP-synced and has been
+  // observed drifting close to (or past) a full minute, which made session
+  // validation fail right at the old tolerance's edge -- a login would
+  // succeed against Clerk's own (accurate-time) servers, then immediately
+  // fail this container's clock check, bouncing back to /sign-in in a loop.
+  // 5 minutes gives real headroom without meaningfully weakening the check.
+  // The actual fix is syncing that PC's clock -- this is a buffer against it
+  // drifting again before that happens.
+  { clockSkewInMs: 300000 },
 );
 
 export const config = {

@@ -4,7 +4,7 @@ import { useUser, useClerk } from '@clerk/nextjs';
 import { FaBars, FaTimes } from 'react-icons/fa';
 import {
   FiGrid, FiMap, FiVideo, FiList,
-  FiFileText, FiSettings, FiLogOut, FiUsers, FiBell,
+  FiFileText, FiSettings, FiLogOut, FiUsers, FiBell, FiHelpCircle,
 } from 'react-icons/fi';
 import NavItem from './nav/NavItem';
 import type { IconType } from 'react-icons';
@@ -87,6 +87,14 @@ const Sidebar = ({ collapsed, setCollapsed }: SidebarProps) => {
 
       {/* User info + sign out */}
       <div className="border-t border-sidebar-border pt-3 mt-3 flex flex-col gap-0.5">
+        <NavItem
+          href="/help"
+          icon={FiHelpCircle}
+          label="Help"
+          active={pathname === '/help'}
+          collapsed={collapsed}
+        />
+
         <NavItem
           href="/settings"
           icon={FiSettings}
