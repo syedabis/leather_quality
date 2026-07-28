@@ -287,17 +287,23 @@ def _build_live_state_payload(unit: str, total_count: int, belt_active: bool) ->
 
 def _push_live_state(plant_id: str, payload: dict) -> None:
     if not BACKEND_URL:
+        print(f"[{plant_id}] live-state push skipped: BACKEND_URL is empty")
         return
 
     def _post():
         try:
-            requests.post(
+            r = requests.post(
                 f"{BACKEND_URL}/api/live-state/{plant_id}",
                 json=payload,
                 timeout=1.5,
             )
-        except Exception:
-            pass
+            if r.status_code != 200:
+                print(f"[{plant_id}] live-state push rejected: {r.status_code} {r.text[:300]}")
+        except Exception as exc:
+            # Was a bare "except: pass" -- silent by design like _push_frame,
+            # but that made this whole feature impossible to debug when it
+            # wasn't working. Visible now; still never blocks inference.
+            print(f"[{plant_id}] live-state push failed: {exc!r}")
 
     _push_pool.submit(_post)
 
@@ -311,7 +317,11 @@ def _maybe_push_live_state(unit: str, now: float, total_count: int, belt_active:
     if now - last < LIVE_STATE_PUSH_INTERVAL_S:
         return
     _live_state_last_push[unit] = now
-    _push_live_state(unit, _build_live_state_payload(unit, total_count, belt_active))
+    payload = _build_live_state_payload(unit, total_count, belt_active)
+    print(f"[{unit}] pushing live-state fallback: "
+          f"{payload['session_type'] if payload['has_session'] else 'no active session'}, "
+          f"pieces={payload.get('current_pieces', payload['total_count'])}")
+    _push_live_state(unit, payload)
 
 
 # ── Settings helpers ──────────────────────────────────────────────────────
@@ -704,6 +714,7 @@ def _plant_worker(
     belt_active         = True
     prev_belt_active    = True
     prev_in_break       = _in_break()  # seeded so starting mid-break doesn't fire a false edge
+    prev_session_active = mode_manager.has_active_mode(unit) or (session_manager.get_state(unit) is not None)
     new_idle_session    = 0
     frames_pushed       = 0
     idle_started        = None   # time.time() when idle began (for duration calc)
@@ -924,6 +935,32 @@ def _plant_worker(
                         session_manager.get_state(unit) is not None,
                         _pieces_in_roi,
                     )
+
+            # Session/mode just ended (Arrow, break start, new LOT, timeout --
+            # whatever ended it) while the belt was still idle: the idle-on-
+            # resume write below never gets a chance to fire during THIS
+            # session's own window if nothing comes back into view before it
+            # ends -- it would otherwise wait indefinitely for the next real
+            # activity, however long after this session's reporting window
+            # already closed. Checkpoint whatever's open right at the boundary
+            # instead, then keep tracking under a fresh clock if still idle,
+            # so no idle time is lost or misattributed to whatever runs next.
+            session_active_now = mode_manager.has_active_mode(unit) or (session_manager.get_state(unit) is not None)
+            if prev_session_active and not session_active_now:
+                if idle_started is not None and idle_period_dt is not None:
+                    _dur_s = time.time() - idle_started
+                    if _dur_s > 0:
+                        _serial_db_write(
+                            db_unit, _write_idle_period, unit, db_unit,
+                            idle_period_dt, datetime.now(), round(_dur_s, 1), total_count,
+                        )
+                    if not belt_active:
+                        idle_started   = time.time()
+                        idle_period_dt = datetime.now()
+                    else:
+                        idle_started   = None
+                        idle_period_dt = None
+            prev_session_active = session_active_now
 
             if not _is_off_today():
                 count_idle = in_shift and not _in_break()

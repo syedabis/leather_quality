@@ -2,10 +2,12 @@
 ModeManager — shape-triggered operating mode state machine.
 
 Shapes (detected by maintenance model.pt):
-  Star     → WASHING        (pieces counted; auto-ends after 20 min belt idle)
-  Plus     → COLOR_MATCHING (pieces counted; auto-ends on 10-piece burst in 35 s)
-  Triangle → MAINTENANCE    (pieces counted; ends via Arrow, or immediately if
-                              a new production session starts — see force_end_mode)
+  Star     → WASHING        (pieces counted; auto-ends after 20 min belt idle,
+                              or a 10-piece burst in 50 s)
+  Plus     → COLOR_MATCHING (pieces counted; auto-ends on a 10-piece burst in 50 s)
+  Triangle → MAINTENANCE    (pieces counted; ends via Arrow, a 10-piece burst in
+                              50 s, or immediately if a new production session
+                              or a break starts — see force_end_mode)
   Arrow    → end any active mode → plant returns to NORMAL session logic
 
 Trigger gate: shape only fires when the plant has NO active production session
@@ -44,6 +46,9 @@ SHAPE_CHECK_INTERVAL_S = 3.0    # seconds between shape-model checks, per plant
 WASHING_IDLE_TIMEOUT_S = 1200   # 20 min idle → auto-end WASHING
 COLOR_BURST_COUNT      = 10     # pieces in burst window → auto-end COLOR_MATCHING
 COLOR_BURST_WINDOW_S   = 50     # rolling burst window in seconds
+
+ORPHAN_CLEANUP_RETRY_MIN_S = 2    # backoff start when orphan-cleanup fails (e.g. DB not ready yet at startup)
+ORPHAN_CLEANUP_RETRY_MAX_S = 30   # backoff cap
 
 # Shape name (as reported by YOLO model) → mode string (None = "end mode")
 SHAPE_TO_MODE: dict[str, Optional[str]] = {
@@ -100,10 +105,95 @@ class ModeManager:
 
     def start(self) -> None:
         outbox.register_session_reconciler(self._reconcile_session_id)
+        # WASHING/COLOR_MATCHING/MAINTENANCE state lives only in this process's
+        # memory. If it restarts (crash, redeploy, an unclean PC shutdown that
+        # skips end_all_active_modes) while a mode is running, the new instance
+        # has no idea -- has_active_mode() comes back False for that plant even
+        # though the DB row is still INPROCESS, so every piece from then on gets
+        # routed to session_manager instead, and the old row is stuck forever at
+        # whatever count it had the moment of the restart. Same class of bug
+        # session_manager already guards against for unaccounted sessions; this
+        # is the equivalent for mode sessions specifically. Runs in the
+        # background with retries so a DB not fully up yet at startup doesn't
+        # skip this, and so cameras/inference still start immediately.
+        threading.Thread(
+            target=self._close_orphaned_mode_sessions_with_retry,
+            args=(datetime.now(),),
+            name="mm-orphan-cleanup",
+            daemon=True,
+        ).start()
         threading.Thread(
             target=self._timer_loop, name="mm-timer", daemon=True
         ).start()
         print("[ModeManager] started")
+
+    def _close_orphaned_mode_sessions_with_retry(self, startup_time: datetime) -> None:
+        delay = ORPHAN_CLEANUP_RETRY_MIN_S
+        while True:
+            if self._close_orphaned_mode_sessions(startup_time):
+                return
+            print(f"[ModeManager] Orphan cleanup failed — retrying in {delay}s...")
+            time.sleep(delay)
+            delay = min(delay * 2, ORPHAN_CLEANUP_RETRY_MAX_S)
+
+    def _close_orphaned_mode_sessions(self, startup_time: datetime) -> bool:
+        """
+        Close out any WASHING/COLOR_MATCHING/MAINTENANCE session left INPROCESS
+        by a previous run, with whatever piece count it last had. We can't
+        resume tracking it reliably (this process has no memory of it), so
+        rather than let it sit stuck forever -- silently swallowing pieces
+        that get routed elsewhere and blocking a clean new session for that
+        plant -- close it the same way session_manager already does for
+        orphaned unaccounted sessions.
+
+        last_updated is capped at this run's own startup time so a delayed
+        retry can't mistake frames THIS run just wrote for the old session's
+        real last activity. s.StartTime < startup_time is a hard filter (not
+        just used for the EndTime calc) so a retry delayed by a slow-to-come-
+        back DB can never reach forward and close a session THIS SAME RUN
+        legitimately created after startup -- without it, a mode triggered
+        while the first attempt was still failing would get killed the moment
+        the retry finally succeeds. Returns True on success (including
+        "nothing to clean"), False on a DB/connection failure so the caller
+        can retry.
+        """
+        try:
+            with get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    UPDATE s
+                    SET s.EndTime = CASE
+                            WHEN chm.last_seen IS NOT NULL AND chm.last_seen > s.StartTime
+                                THEN chm.last_seen
+                            ELSE s.StartTime
+                        END,
+                        s.Status = 'COMPLETED'
+                    OUTPUT DELETED.SessionId, DELETED.Plant, DELETED.session_type, DELETED.ProcessedPieces
+                    FROM dbo.AppSessions s
+                    OUTER APPLY (
+                        SELECT MAX(last_updated) AS last_seen
+                        FROM dbo.CurrentHourMetrics c
+                        WHERE c.source_note = s.Plant
+                          AND c.last_updated <= ?
+                    ) chm
+                    WHERE s.session_type IN ('WASHING', 'COLOR_MATCHING', 'MAINTENANCE')
+                      AND s.Status = 'INPROCESS'
+                      AND s.StartTime < ?
+                    """,
+                    (startup_time, startup_time),
+                )
+                rows = cur.fetchall()
+                conn.commit()
+            for sid, plant, mode, proc_pcs in rows:
+                print(
+                    f"[ModeManager] Closed orphaned {mode} session {sid} "
+                    f"(plant={plant}, pieces={proc_pcs}) left INPROCESS by a previous run"
+                )
+            return True
+        except Exception as exc:
+            print(f"[ModeManager] Orphan cleanup attempt failed: {exc}")
+            return False
 
     def _timer_loop(self) -> None:
         while True:
@@ -221,13 +311,13 @@ class ModeManager:
         """
         Call for every piece_delta > 0 when the plant is in a non-NORMAL mode.
         Counts the piece in the mode session and checks the piece-burst end condition
-        for WASHING and COLOR_MATCHING (10 pieces in 50 s).
+        (10 pieces in 50 s) -- applies to WASHING, COLOR_MATCHING, and MAINTENANCE alike.
         Returns True if the mode ended via burst trigger.
 
         Burst semantics: the 10 burst pieces belong to the NEW unaccounted session,
-        not to the ending mode session.  ColorMatching/Washing EndTime and
-        ProcessedPieces are both anchored to the moment the burst started
-        (burst_times[0]), so the burst pieces are cleanly handed off.
+        not to the ending mode session. The mode's EndTime and ProcessedPieces are
+        both anchored to the moment the burst started (burst_times[0]), so the
+        burst pieces are cleanly handed off.
         """
         snap_to_end:    Optional[PlantModeState] = None
         snap_burst_start: Optional[datetime]     = None
@@ -241,7 +331,7 @@ class ModeManager:
             state.last_piece_ts = ts
             state.last_activity = ts
 
-            if state.mode in ("COLOR_MATCHING", "WASHING"):
+            if state.mode in ("COLOR_MATCHING", "WASHING", "MAINTENANCE"):
                 state.burst_times.append(ts)
                 cutoff = ts - timedelta(seconds=COLOR_BURST_WINDOW_S)
                 while state.burst_times and state.burst_times[0] < cutoff:

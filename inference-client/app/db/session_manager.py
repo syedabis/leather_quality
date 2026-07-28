@@ -108,8 +108,14 @@ class SessionManager:
 
         last_updated is capped at this run's own startup time so a delayed
         retry can't mistake frames THIS run just wrote for the old session's
-        real last activity. Returns True on success (including "nothing to
-        clean"), False on a DB/connection failure so the caller can retry.
+        real last activity. s.StartTime < startup_time is a hard filter (not
+        just used for the EndTime calc) so a retry delayed by a slow-to-come-
+        back DB can never reach forward and close a session THIS SAME RUN
+        legitimately created after startup -- without it, an unaccounted
+        session opened while the first attempt was still failing would get
+        killed the moment the retry finally succeeds. Returns True on success
+        (including "nothing to clean"), False on a DB/connection failure so
+        the caller can retry.
         """
         try:
             with get_connection() as conn:
@@ -132,8 +138,9 @@ class SessionManager:
                           AND c.last_updated <= ?
                     ) chm
                     WHERE s.LotNo IS NULL AND s.Status = 'INPROCESS'
+                      AND s.StartTime < ?
                     """,
-                    (startup_time,),
+                    (startup_time, startup_time),
                 )
                 rows = cur.fetchall()
                 conn.commit()

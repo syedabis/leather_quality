@@ -83,14 +83,14 @@ export default function Help() {
             <ShapeRow shape="Arrow"    mode="Ends MAINTENANCE" />
           </div>
           <p className="text-[11px] text-gray-400 mt-3">
-            A new LOT starting, or break time starting, now also force-ends any active mode &mdash; not just Arrow.
+            A new LOT starting, or break time starting, force-ends whichever mode is active &mdash; WASHING, COLOR MATCHING, or MAINTENANCE alike. Arrow itself only ends MAINTENANCE.
           </p>
 
           <div className="mt-4 pt-4 border-t border-gray-100 dark:border-[#2c2c2c] space-y-2.5">
             <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-widest mb-1">How Each Mode Ends</p>
-            <Term term="WASHING">20 min idle, or 10 pieces within 50s, or Arrow, or new LOT, or break starts.</Term>
-            <Term term="COLOR MATCHING">10 pieces within 50s, or Arrow, or new LOT, or break starts.</Term>
-            <Term term="MAINTENANCE">Arrow, or new LOT, or break starts.</Term>
+            <Term term="WASHING">20 min idle, or 10 pieces within 50s, or switching to another shape card, or new LOT, or break starts.</Term>
+            <Term term="COLOR MATCHING">10 pieces within 50s, or switching to another shape card, or new LOT, or break starts.</Term>
+            <Term term="MAINTENANCE">Arrow, or 10 pieces within 50s, or new LOT, or break starts.</Term>
           </div>
         </Card>
 
