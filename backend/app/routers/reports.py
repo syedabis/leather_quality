@@ -519,11 +519,17 @@ def download_report_excel(
                             ws.cell(ri, col).fill = idle_fill
                 t2 = pd["totals"]
                 ws.append([])
-                for lbl, val in [("Total Run Time",   t2["run_label"]),
+                _footer_lines = [("Total Run Time",   t2["run_label"]),
                                   ("Total Idle Time",  t2["idle_label"]),
                                   ("Total Break Time", t2["break_label"]),
                                   ("Pieces Processed", t2["pieces"]),
-                                  ("Utilisation",      f'{t2["utilization_pct"]}%')]:
+                                  ("Utilisation",      f'{t2["utilization_pct"]}%')]
+                if t2.get("maintenance_label"):
+                    _footer_lines.append(
+                        ("Maintenance Time",
+                         f'{t2["maintenance_label"]} ({t2["maintenance_pieces"]} pcs)')
+                    )
+                for lbl, val in _footer_lines:
                     ws.append([None, None, None, None, None, None, lbl, None, val])
                 ws.append([])
             _xl_auto_width(ws)

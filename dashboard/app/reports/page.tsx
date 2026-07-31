@@ -49,6 +49,7 @@ interface DetailPlant {
     run_label: string; idle_label: string; break_label: string;
     overtime_s?: number; overtime_label?: string | null;
     pieces: number; utilization_pct: number;
+    maintenance_s?: number; maintenance_label?: string | null; maintenance_pieces?: number;
   };
 }
 interface DetailData  { date: string; plants: DetailPlant[]; }
@@ -425,7 +426,7 @@ function DailyDetailTab() {
               </table>
             </div>
             {/* Totals */}
-            <div className="bg-gray-50 dark:bg-[#1a1a1a] border-t border-gray-200 dark:border-white/10 px-6 py-3 grid grid-cols-2 sm:grid-cols-6 gap-4 text-sm">
+            <div className={`bg-gray-50 dark:bg-[#1a1a1a] border-t border-gray-200 dark:border-white/10 px-6 py-3 grid grid-cols-2 ${pd.totals.maintenance_label ? 'sm:grid-cols-7' : 'sm:grid-cols-6'} gap-4 text-sm`}>
               {[
                 { label: 'Total Run Time',  value: pd.totals.run_label },
                 { label: 'Total Idle Time', value: pd.totals.idle_label },
@@ -433,6 +434,13 @@ function DailyDetailTab() {
                 { label: 'Pieces Processed',value: pd.totals.pieces.toLocaleString() },
                 { label: 'Utilisation',     value: `${pd.totals.utilization_pct}%` },
                 { label: 'Overtime',        value: pd.totals.overtime_label ?? '—', color: 'text-orange-600 dark:text-orange-400' },
+                ...(pd.totals.maintenance_label
+                  ? [{
+                      label: 'Maintenance',
+                      value: `${pd.totals.maintenance_label} · ${(pd.totals.maintenance_pieces ?? 0).toLocaleString()} pcs`,
+                      color: 'text-sky-600 dark:text-sky-400',
+                    }]
+                  : []),
               ].map(({ label, value, color }) => (
                 <div key={label} className="text-center">
                   <p className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">{label}</p>

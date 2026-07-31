@@ -1094,12 +1094,18 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
         sessions         = by_plant.get(plant_id, [])
         eff_break        = _effective_break_window(report_d, sessions)
         _plant_idle_ivs  = _merge_intervals(_idle_by_plant.get(plant_id, []))
-        rows_out    = []
-        run_s       = 0
-        idle_s      = 0
-        break_s     = 0
-        overtime_s  = 0
-        pieces      = 0
+        rows_out           = []
+        run_s              = 0
+        idle_s             = 0
+        break_s            = 0
+        overtime_s         = 0
+        pieces             = 0
+        # MAINTENANCE gets no row of its own (top-level or nested under a
+        # break) and its time counts toward neither run nor idle -- only a
+        # summed-up footer total, tallied here regardless of where in the
+        # day (inside a break window or not) it happened.
+        maintenance_s       = 0
+        maintenance_pieces  = 0
 
         # ── Absorb mode sessions that fall entirely within the break window ──
         # They become nested sub-rows inside the BREAK TIME row instead of
@@ -1123,6 +1129,11 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
         for _s in sorted(_absorbed, key=lambda x: x["start_time"]):
             _dur = max(0, int((_s["end_time"] - _s["start_time"]).total_seconds()))
             _st = _s["session_type"]
+            if _st == "MAINTENANCE":
+                maintenance_s      += _dur
+                maintenance_pieces += _s["pieces"]
+                pieces             += _s["pieces"]
+                continue   # no row, even nested under BREAK TIME
             _break_sub_rows.append({
                 "row_type":       "session",
                 "lot_no":         _st.replace("_", " "),
@@ -1157,56 +1168,67 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
                 dur_s = int((s["end_time"] - s["start_time"]).total_seconds())
                 if dur_s < 0:
                     dur_s = 0
-                run_s  += dur_s
                 pieces += s["pieces"]
                 _stype = s.get("session_type", "PRODUCTION")
-                _label = (
-                    _stype.replace("_", " ") if _stype in _MODE_TYPES
-                    else (s["lot_no"] or "UNACCOUNTED")
-                )
-                _ot_s, _ = _calc_overtime(
-                    s["start_time"], s["end_time"], shift_start_dt, _shift_end_original)
-                overtime_s += _ot_s
-                run_s      -= _ot_s   # overtime is not part of shift run time
-                rows_out.append({
-                    "row_type":       "session",
-                    "lot_no":         _label,
-                    "session_type":   _stype,
-                    "order_no":       s["order_no"]     or "N/A",
-                    "party_name":     s["party_name"]   or "N/A",
-                    "article_name":   s["article_name"] or "N/A",
-                    "colour_name":    s["colour_name"]  or "N/A",
-                    "pieces":         s["pieces"],
-                    "plant":          plant_id,
-                    "start_time":     s["start_time"].strftime("%H:%M"),
-                    "end_time":       s["end_time"].strftime("%H:%M"),
-                    "duration_label": _fmt_duration(dur_s),
-                })
 
-                # Within-session idle — accumulate into a field on the session row
-                # instead of adding separate idle rows to the timeline.
-                # _plant_idle_ivs is pre-merged so overlapping intervals can't
-                # push _within_idle_s above the actual session duration.
-                _within_idle_s = 0
-                for _ip_start, _ip_end in _plant_idle_ivs:
-                    if _ip_end <= s["start_time"] - _SKEW:
-                        continue
-                    if _ip_start >= s["end_time"] + _SKEW:
-                        continue
-                    _cs = max(_ip_start, s["start_time"], shift_start_dt)
-                    _ce = min(_ip_end,   s["end_time"],   shift_end_dt)
-                    if _ce <= _cs:
-                        continue
-                    _ip_dur = int((_ce - _cs).total_seconds())
-                    if _ip_dur > 0:
-                        _within_idle_s += _ip_dur
-                _within_idle_s = min(_within_idle_s, dur_s)  # safety cap
-                _active_s = dur_s - _within_idle_s
-                run_s  -= _within_idle_s
-                idle_s += _within_idle_s
-                rows_out[-1]["active_label"] = _fmt_duration(_active_s)
-                if _within_idle_s > 1:                        # suppress sub-second noise
-                    rows_out[-1]["idle_within_label"] = _fmt_duration(_within_idle_s)
+                if _stype == "MAINTENANCE":
+                    # No row, no run/idle contribution -- tallied into the
+                    # footer-only maintenance total instead. Still left in
+                    # _main_sessions (not filtered out) so the idle-gap
+                    # calculation immediately below still starts counting
+                    # from the right boundary, instead of the gap before/
+                    # after swallowing this window as idle.
+                    maintenance_s      += dur_s
+                    maintenance_pieces += s["pieces"]
+                else:
+                    run_s += dur_s
+                    _label = (
+                        _stype.replace("_", " ") if _stype in _MODE_TYPES
+                        else (s["lot_no"] or "UNACCOUNTED")
+                    )
+                    _ot_s, _ = _calc_overtime(
+                        s["start_time"], s["end_time"], shift_start_dt, _shift_end_original)
+                    overtime_s += _ot_s
+                    run_s      -= _ot_s   # overtime is not part of shift run time
+                    rows_out.append({
+                        "row_type":       "session",
+                        "lot_no":         _label,
+                        "session_type":   _stype,
+                        "order_no":       s["order_no"]     or "N/A",
+                        "party_name":     s["party_name"]   or "N/A",
+                        "article_name":   s["article_name"] or "N/A",
+                        "colour_name":    s["colour_name"]  or "N/A",
+                        "pieces":         s["pieces"],
+                        "plant":          plant_id,
+                        "start_time":     s["start_time"].strftime("%H:%M"),
+                        "end_time":       s["end_time"].strftime("%H:%M"),
+                        "duration_label": _fmt_duration(dur_s),
+                    })
+
+                    # Within-session idle — accumulate into a field on the session row
+                    # instead of adding separate idle rows to the timeline.
+                    # _plant_idle_ivs is pre-merged so overlapping intervals can't
+                    # push _within_idle_s above the actual session duration.
+                    _within_idle_s = 0
+                    for _ip_start, _ip_end in _plant_idle_ivs:
+                        if _ip_end <= s["start_time"] - _SKEW:
+                            continue
+                        if _ip_start >= s["end_time"] + _SKEW:
+                            continue
+                        _cs = max(_ip_start, s["start_time"], shift_start_dt)
+                        _ce = min(_ip_end,   s["end_time"],   shift_end_dt)
+                        if _ce <= _cs:
+                            continue
+                        _ip_dur = int((_ce - _cs).total_seconds())
+                        if _ip_dur > 0:
+                            _within_idle_s += _ip_dur
+                    _within_idle_s = min(_within_idle_s, dur_s)  # safety cap
+                    _active_s = dur_s - _within_idle_s
+                    run_s  -= _within_idle_s
+                    idle_s += _within_idle_s
+                    rows_out[-1]["active_label"] = _fmt_duration(_active_s)
+                    if _within_idle_s > 1:                        # suppress sub-second noise
+                        rows_out[-1]["idle_within_label"] = _fmt_duration(_within_idle_s)
 
                 if i < len(_main_sessions) - 1:
                     # Clip inter-session gap to shift hours — idle outside shift not shown/counted
@@ -1235,16 +1257,19 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
             "session_end":   sessions[-1]["end_time"].strftime("%H:%M")  if sessions else None,
             "rows":  rows_out,
             "totals": {
-                "run_label":       _fmt_duration(run_s),
-                "idle_label":      _fmt_duration(idle_s),
-                "break_label":     _fmt_duration(break_s),
-                "overtime_s":      overtime_s,
-                "overtime_label":  _fmt_duration(overtime_s) if overtime_s > 0 else None,
-                "run_time_min":    round(run_s   / 60),
-                "idle_time_min":   round(idle_s  / 60),
-                "break_time_min":  round(break_s / 60),
-                "pieces":          pieces,
-                "utilization_pct": util_pct,
+                "run_label":            _fmt_duration(run_s),
+                "idle_label":           _fmt_duration(idle_s),
+                "break_label":          _fmt_duration(break_s),
+                "overtime_s":           overtime_s,
+                "overtime_label":       _fmt_duration(overtime_s) if overtime_s > 0 else None,
+                "run_time_min":         round(run_s   / 60),
+                "idle_time_min":        round(idle_s  / 60),
+                "break_time_min":       round(break_s / 60),
+                "pieces":               pieces,
+                "utilization_pct":      util_pct,
+                "maintenance_s":        maintenance_s,
+                "maintenance_label":    _fmt_duration(maintenance_s) if maintenance_s > 0 else None,
+                "maintenance_pieces":   maintenance_pieces,
             },
         })
 
