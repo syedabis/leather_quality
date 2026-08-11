@@ -16,6 +16,7 @@ from typing import Optional
 from app.db.connection import get_connection
 from app.db.mode_manager import mode_manager
 from app.db.outbox import outbox
+from app.floor_view_logger import floor_view_logger
 
 # ── Tuning constants ───────────────────────────────────────────────────────
 POLL_INTERVAL_S             = 5     # how often to poll AppSessions
@@ -183,10 +184,24 @@ class SessionManager:
         with self._lock:
             states = [s for s in self._state.values() if s is not None]
             self._state.clear()
+            # Pending buffers (< threshold, not yet aged out) would otherwise
+            # vanish silently on shutdown -- flush them to the floor_view log
+            # the same as an aged-out drop, so nothing goes untracked.
+            pending = {p: list(b) for p, b in self._consec_buffer.items() if b}
+            self._consec_buffer.clear()
         for state in states:
             self._do_end_session_db(state)
         if states:
             print(f"[SessionManager] Gracefully closed {len(states)} active session(s) on shutdown")
+        for plant, buf in pending.items():
+            for piece_ts in buf:
+                floor_view_logger.log_dropped(
+                    plant, piece_ts, len(buf),
+                    reason="process stopped before threshold reached",
+                )
+        if pending:
+            total = sum(len(b) for b in pending.values())
+            print(f"[SessionManager] Flushed {total} pending unattributed piece(s) to floor_view log on shutdown")
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -198,8 +213,12 @@ class SessionManager:
         with self._lock:
             return dict(self._state)
 
-    def on_piece_detected(self, plant: str, ts: datetime) -> None:
-        """Called by the plant worker for each new piece (piece_delta > 0)."""
+    def on_piece_detected(self, plant: str, ts: datetime, count: int = 1) -> None:
+        """Called by the plant worker for each frame with piece_delta > 0.
+        count is that frame's piece_delta -- a single frame can carry more
+        than one new piece (several pieces entering the ROI between one
+        processed frame and the next), and every one of them must be
+        credited, not just the frame/call itself."""
         create_unaccounted = False
         session_start_time: Optional[datetime] = None
 
@@ -207,21 +226,37 @@ class SessionManager:
             state = self._state.get(plant)
 
             if state is not None:
-                # Active session: count piece and refresh last-seen timestamp
-                state.current_count  += 1
+                # Active session: count piece(s) and refresh last-seen timestamp
+                state.current_count  += count
                 state.last_piece_time = ts
                 return
 
-            # No active session — accumulate sliding-window buffer
+            # No active session — accumulate sliding-window buffer. Each
+            # piece in this frame gets its own timestamp entry so the
+            # consecutive-count and aging-out logic below still treats them
+            # individually, exactly as if they'd arrived on separate frames.
             buf = self._consec_buffer.setdefault(plant, [])
-            buf.append(ts)
+            buf.extend([ts] * count)
 
-            # Drop pieces older than BURST_WINDOW_S (sliding window)
+            # Drop pieces older than BURST_WINDOW_S (sliding window) — these
+            # never reached the consecutive threshold, so they'll never become
+            # part of any session. Still counted in CurrentHourMetrics, so log
+            # them: this is exactly the gap that makes metrics-based reports
+            # (Daily Summary) disagree with session-based reports (Daily Detail).
             while buf and (ts - buf[0]).total_seconds() > BURST_WINDOW_S:
-                buf.pop(0)
+                dropped_ts = buf.pop(0)
+                floor_view_logger.log_dropped(
+                    plant, dropped_ts, len(buf),
+                    reason="aged out of burst window before reaching threshold",
+                )
 
             if len(buf) >= CONSECUTIVE_FOR_UNACCOUNTED:
                 session_start_time = buf[0]
+                # A multi-piece frame can push the buffer past the threshold
+                # in one jump (e.g. 8 -> 11), so credit the real buffered
+                # count, not the CONSECUTIVE_FOR_UNACCOUNTED constant, or the
+                # extra pieces above the threshold would be lost right here.
+                initial_count = len(buf)
                 buf.clear()
                 create_unaccounted = True
                 # Insert placeholder immediately so no duplicate is created
@@ -232,7 +267,7 @@ class SessionManager:
                     start_time      = session_start_time,
                     lot_no          = None,
                     expected_pieces = None,
-                    current_count   = CONSECUTIVE_FOR_UNACCOUNTED,
+                    current_count   = initial_count,
                     last_piece_time = ts,
                 )
 

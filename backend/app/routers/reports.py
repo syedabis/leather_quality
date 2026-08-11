@@ -191,7 +191,7 @@ def daily_summary(date_param: str = Query(str(_date.today()), alias="date")):
     """
     Returns the two-section daily report data for the reports page.
     Section 1: per-unit utilisation (available hrs, shift run, idle, utilisation %)
-    Section 2: per-unit pieces (pieces, daily target, achievement %)
+    Section 2: per-unit pieces (pieces, session vs out-of-session split, daily target, achievement %)
     """
     try:
         with get_connection() as conn:
@@ -239,14 +239,21 @@ def daily_summary(date_param: str = Query(str(_date.today()), alias="date")):
                 pass  # table doesn't exist yet — fall back to flat_targets
 
         frame_metrics   = get_frame_metrics(date_param, date_param)   # pieces only
-        session_metrics = _batch_session_metrics(date_param, date_param, UNITS)
+        session_metrics = _batch_session_metrics(date_param, date_param, UNITS, include_live_session=True)
         plants = []
         for unit in UNITS:
             fm            = frame_metrics.get((date_param, unit), {"pieces": 0})
-            sm            = session_metrics.get((date_param, unit), {"run_s": 0, "idle_s": 0})
+            sm            = session_metrics.get((date_param, unit), {"run_s": 0, "idle_s": 0, "pieces": 0})
             pieces        = fm["pieces"]
             run_s         = sm["run_s"]
             idle_s        = sm["idle_s"]
+            # session_pieces: pieces attributed to an AppSessions row (accounted,
+            # unaccounted, or a mode like MAINTENANCE/WASHING/COLOR_MATCHING).
+            # out_of_session_pieces: the rest -- pieces the camera counted that
+            # never made it into any session (clamped at 0 in case a session
+            # spans across the date boundary and briefly outweighs the frame total).
+            session_pieces        = sm.get("pieces", 0)
+            out_of_session_pieces = max(0, pieces - session_pieces)
             observed_s    = run_s + idle_s
             utilization   = round(run_s / observed_s * 100, 1) if observed_s else 0.0
             shift_run_hrs = round(run_s / 3600, 1)
@@ -254,18 +261,20 @@ def daily_summary(date_param: str = Query(str(_date.today()), alias="date")):
             daily_target  = period_by_unit.get(unit) or period_all or flat_targets.get(unit, 1500)
             achievement   = round(pieces / daily_target * 100, 1) if daily_target else 0.0
             plants.append({
-                "unit":             unit,
-                "available_hours":  available_hours,
-                "shift_run_hrs":    shift_run_hrs,
-                "idle_time_hrs":    idle_hrs,
-                "run_s":            int(run_s),
-                "idle_s":           int(idle_s),
-                "utilization_pct":  utilization,
-                "util_status":      "On Target" if utilization >= 90 else "Monitor",
-                "pieces":           pieces,
-                "daily_target":     daily_target,
-                "achievement_pct":  achievement,
-                "piece_status":     "On Target" if achievement >= 90 else "Monitor",
+                "unit":                   unit,
+                "available_hours":        available_hours,
+                "shift_run_hrs":          shift_run_hrs,
+                "idle_time_hrs":          idle_hrs,
+                "run_s":                  int(run_s),
+                "idle_s":                 int(idle_s),
+                "utilization_pct":        utilization,
+                "util_status":            "On Target" if utilization >= 90 else "Monitor",
+                "pieces":                 pieces,
+                "session_pieces":         session_pieces,
+                "out_of_session_pieces":  out_of_session_pieces,
+                "daily_target":           daily_target,
+                "achievement_pct":        achievement,
+                "piece_status":           "On Target" if achievement >= 90 else "Monitor",
             })
 
         return {
@@ -462,11 +471,13 @@ def download_report_excel(
             ws.append(["Start Date", f]);  ws.append(["End Date", t])
             ws.append(["Plant", plant or "All Plants"]); ws.append([])
             _xl_hrow(ws, ["Date", "Plant", "Total Run Time", "Total Idle Time",
-                          "Pieces Processed", "Utilisation %"])
+                          "Maintenance", "Overtime", "Pieces Processed", "Utilisation %"])
             for r in pw:
+                maint = (f'{r["maintenance_label"]} ({r["maintenance_pieces"]} pcs)'
+                         if r.get("maintenance_label") else "")
                 ws.append([r["date"], r["plant"], r["run_time_label"],
-                           r["idle_time_label"], r["pieces"],
-                           f'{r["utilization_pct"]}%'])
+                           r["idle_time_label"], maint, r.get("overtime_label") or "",
+                           r["pieces"], f'{r["utilization_pct"]}%'])
             _xl_auto_width(ws)
 
         # ── Sheet: Daily Report ────────────────────────────────────────────
@@ -557,15 +568,17 @@ def download_report_excel(
             ws.append([])
             ws.append(["SECTION 2 — PIECES PASSED PER PLANT"])
             ws.cell(ws.max_row, 1).font = Font(bold=True)
-            _xl_hrow(ws, ["Plant", "Pieces", "Daily Target", "Achievement %",
-                          "vs Target", "Status"])
+            _xl_hrow(ws, ["Plant", "Pieces", "In Session", "Out of Session", "Daily Target",
+                          "Achievement %", "vs Target", "Status"])
             for p in sd["plants"]:
                 diff = p["pieces"] - p["daily_target"]
-                ws.append([p["unit"], p["pieces"], p["daily_target"],
-                           f'{p["achievement_pct"]}%', diff, p["piece_status"]])
-            tp = sum(p["pieces"]       for p in sd["plants"])
-            tt = sum(p["daily_target"] for p in sd["plants"])
-            ws.append(["Total (All Plants)", tp, tt,
+                ws.append([p["unit"], p["pieces"], p["session_pieces"], p["out_of_session_pieces"],
+                           p["daily_target"], f'{p["achievement_pct"]}%', diff, p["piece_status"]])
+            tp  = sum(p["pieces"]                for p in sd["plants"])
+            tsp = sum(p["session_pieces"]         for p in sd["plants"])
+            top = sum(p["out_of_session_pieces"]  for p in sd["plants"])
+            tt  = sum(p["daily_target"]           for p in sd["plants"])
+            ws.append(["Total (All Plants)", tp, tsp, top, tt,
                        f'{round(tp/tt*100,1) if tt else 0}%',
                        tp - tt])
             ws.cell(ws.max_row, 1).font = Font(bold=True)

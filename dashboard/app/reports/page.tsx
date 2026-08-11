@@ -21,7 +21,8 @@ interface PlantRow {
   unit: string; available_hours: number; shift_run_hrs: number;
   idle_time_hrs: number; run_s: number; idle_s: number;
   utilization_pct: number; util_status: string;
-  pieces: number; daily_target: number; achievement_pct: number; piece_status: string;
+  pieces: number; session_pieces: number; out_of_session_pieces: number;
+  daily_target: number; achievement_pct: number; piece_status: string;
 }
 interface SummaryData {
   date: string; shift_start: string; shift_end: string;
@@ -57,6 +58,8 @@ interface DetailData  { date: string; plants: DetailPlant[]; }
 interface PlantWiseRow {
   date: string; plant: string; run_time_label: string; idle_time_label: string;
   pieces: number; utilization_pct: number;
+  maintenance_s?: number; maintenance_label?: string | null; maintenance_pieces?: number;
+  overtime_s?: number; overtime_label?: string | null;
 }
 interface PlantWiseData { from: string; to: string; available_hours: number; rows: PlantWiseRow[]; }
 
@@ -243,7 +246,7 @@ function DailySummaryTab() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-gray-50 dark:bg-[#1a1a1a]">
-                    <tr>{['Plant','Pieces','Daily Target','Achievement %','vs Target','Status'].map(h => <Th key={h}>{h}</Th>)}</tr>
+                    <tr>{['Plant','Pieces','In Session','Out of Session','Daily Target','Achievement %','vs Target','Status'].map(h => <Th key={h}>{h}</Th>)}</tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100 dark:divide-white/5">
                     {plants.map(p => {
@@ -252,6 +255,8 @@ function DailySummaryTab() {
                         <tr key={p.unit} className="hover:bg-gray-50 dark:hover:bg-[#1a1a1a] transition-colors">
                           <Td className="font-semibold text-gray-900 dark:text-white">{p.unit}</Td>
                           <Td className="font-semibold text-gray-900 dark:text-white">{p.pieces.toLocaleString()}</Td>
+                          <Td className="text-sky-600 dark:text-sky-400">{p.session_pieces.toLocaleString()}</Td>
+                          <Td className="text-amber-600 dark:text-amber-400">{p.out_of_session_pieces.toLocaleString()}</Td>
                           <Td className="text-gray-700 dark:text-gray-300">{p.daily_target.toLocaleString()}</Td>
                           <Td className="text-gray-700 dark:text-gray-300">{p.achievement_pct}%</Td>
                           <Td className={`font-semibold ${diff>=0?'text-emerald-600 dark:text-emerald-400':'text-red-500 dark:text-red-400'}`}>
@@ -264,6 +269,8 @@ function DailySummaryTab() {
                     <tr className="bg-gray-50 dark:bg-[#1a1a1a] font-semibold">
                       <Td className="text-xs uppercase text-gray-500 dark:text-gray-400">Total (All Plants)</Td>
                       <Td className="text-gray-900 dark:text-white">{plants.reduce((s,p)=>s+p.pieces,0).toLocaleString()}</Td>
+                      <Td className="text-sky-600 dark:text-sky-400">{plants.reduce((s,p)=>s+p.session_pieces,0).toLocaleString()}</Td>
+                      <Td className="text-amber-600 dark:text-amber-400">{plants.reduce((s,p)=>s+p.out_of_session_pieces,0).toLocaleString()}</Td>
                       <Td className="text-gray-900 dark:text-white">{plants.reduce((s,p)=>s+p.daily_target,0).toLocaleString()}</Td>
                       <Td className="text-gray-900 dark:text-white">
                         {(plants.reduce((s,p)=>s+p.pieces,0)/plants.reduce((s,p)=>s+p.daily_target,0)*100).toFixed(1)}%
@@ -275,6 +282,16 @@ function DailySummaryTab() {
                     </tr>
                   </tbody>
                 </table>
+              </div>
+              <div className="flex flex-wrap items-center gap-4 px-1 pt-3 text-xs text-gray-500 dark:text-gray-400">
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block h-2 w-2 rounded-full bg-sky-500" />
+                  <span className="font-medium text-sky-600 dark:text-sky-400">In Session</span> — pieces attributed to a tracked session (a lot, an auto-detected unaccounted run, or a mode like Washing / Color Matching / Maintenance)
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block h-2 w-2 rounded-full bg-amber-500" />
+                  <span className="font-medium text-amber-600 dark:text-amber-400">Out of Session</span> — pieces counted by the camera that never became part of any session (too few arrived close together, or the process restarted mid-count)
+                </span>
               </div>
             </Card>
           </motion.div>
@@ -500,7 +517,7 @@ function PlantWiseTab() {
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 dark:bg-[#1a1a1a]">
-                  <tr>{['Date','Plant','Total Run Time','Total Idle Time','Pieces Processed','Utilisation %'].map(h=><Th key={h}>{h}</Th>)}</tr>
+                  <tr>{['Date','Plant','Total Run Time','Total Idle Time','Maintenance','Overtime','Pieces Processed','Utilisation %'].map(h=><Th key={h}>{h}</Th>)}</tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-white/5">
                   {rows.map((r, i) => (
@@ -509,6 +526,10 @@ function PlantWiseTab() {
                       <Td className="font-semibold text-gray-900 dark:text-white">{r.plant}</Td>
                       <Td className="text-gray-700 dark:text-gray-300">{r.run_time_label}</Td>
                       <Td className="text-gray-700 dark:text-gray-300">{r.idle_time_label}</Td>
+                      <Td className="text-sky-600 dark:text-sky-400">
+                        {r.maintenance_label ? `${r.maintenance_label} · ${(r.maintenance_pieces ?? 0).toLocaleString()} pcs` : '—'}
+                      </Td>
+                      <Td className="text-orange-600 dark:text-orange-400">{r.overtime_label ?? '—'}</Td>
                       <Td className="font-semibold text-gray-900 dark:text-white">{r.pieces.toLocaleString()}</Td>
                       <Td className={`font-semibold ${r.utilization_pct>=70?'text-emerald-600 dark:text-emerald-400':r.utilization_pct>=40?'text-amber-600 dark:text-amber-400':'text-red-500 dark:text-red-400'}`}>
                         {r.utilization_pct}%

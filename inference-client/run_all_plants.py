@@ -41,6 +41,7 @@ from app.db.frame_processor import FrameProcessor
 from app.db.session_manager import session_manager
 from app.db.mode_manager import mode_manager, SHAPE_CHECK_INTERVAL_S
 from app.db.outbox import outbox
+from app.floor_view_logger import floor_view_logger
 
 # ── RTSP stream stability — force TCP transport so UDP packet loss can't
 #    cause "Duplicate POC" / "Could not find ref" decoder errors.
@@ -976,9 +977,9 @@ def _plant_worker(
                 )
                 if piece_delta > 0:
                     if mode_manager.has_active_mode(unit):
-                        mode_manager.on_piece_detected(unit, datetime.now())
+                        mode_manager.on_piece_detected(unit, datetime.now(), piece_delta)
                     else:
-                        session_manager.on_piece_detected(unit, datetime.now())
+                        session_manager.on_piece_detected(unit, datetime.now(), piece_delta)
                 _maybe_push_live_state(unit, now, total_count, belt_active)
             new_idle_session = 0
 
@@ -1185,6 +1186,10 @@ def main() -> None:
     # metrics from a previous outage (or one that starts now) get replayed.
     outbox.start()
 
+    # Start floor_view logger before session_manager so no dropped piece can
+    # be missed the moment pieces start arriving.
+    floor_view_logger.start()
+
     # Start session manager (polls AppSessions + handles timers)
     session_manager.start()
     mode_manager.start()
@@ -1260,6 +1265,7 @@ def main() -> None:
         session_manager.end_all_active_sessions()
         mode_manager.end_all_active_modes()
         session_manager.stop()
+        floor_view_logger.stop()
         for t in threads:
             t.join(timeout=5)
         cv2.destroyAllWindows()

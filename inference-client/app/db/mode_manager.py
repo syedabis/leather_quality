@@ -307,17 +307,20 @@ class ModeManager:
             self._cooldowns[plant] = ts + timedelta(seconds=SHAPE_COOLDOWN_S)
             self._fire_mode(plant, shape_name, ts)
 
-    def on_piece_detected(self, plant: str, ts: datetime) -> bool:
+    def on_piece_detected(self, plant: str, ts: datetime, count: int = 1) -> bool:
         """
-        Call for every piece_delta > 0 when the plant is in a non-NORMAL mode.
-        Counts the piece in the mode session and checks the piece-burst end condition
-        (10 pieces in 50 s) -- applies to WASHING, COLOR_MATCHING, and MAINTENANCE alike.
+        Call for every frame with piece_delta > 0 when the plant is in a
+        non-NORMAL mode. count is that frame's piece_delta -- a single frame
+        can carry more than one new piece, and every one of them must be
+        credited, not just the frame/call itself. Counts the piece(s) in the
+        mode session and checks the piece-burst end condition (10 pieces in
+        50 s) -- applies to WASHING, COLOR_MATCHING, and MAINTENANCE alike.
         Returns True if the mode ended via burst trigger.
 
-        Burst semantics: the 10 burst pieces belong to the NEW unaccounted session,
-        not to the ending mode session. The mode's EndTime and ProcessedPieces are
-        both anchored to the moment the burst started (burst_times[0]), so the
-        burst pieces are cleanly handed off.
+        Burst semantics: the burst pieces belong to the NEW unaccounted
+        session, not to the ending mode session. The mode's EndTime and
+        ProcessedPieces are both anchored to the moment the burst started
+        (burst_times[0]), so the burst pieces are cleanly handed off.
         """
         snap_to_end:    Optional[PlantModeState] = None
         snap_burst_start: Optional[datetime]     = None
@@ -327,21 +330,27 @@ class ModeManager:
             if state is None:
                 return False
 
-            state.piece_count  += 1
+            state.piece_count  += count
             state.last_piece_ts = ts
             state.last_activity = ts
 
             if state.mode in ("COLOR_MATCHING", "WASHING", "MAINTENANCE"):
-                state.burst_times.append(ts)
+                state.burst_times.extend([ts] * count)
                 cutoff = ts - timedelta(seconds=COLOR_BURST_WINDOW_S)
                 while state.burst_times and state.burst_times[0] < cutoff:
                     state.burst_times.popleft()
                 if len(state.burst_times) >= COLOR_BURST_COUNT:
                     # Burst pieces belong to the new unaccounted session.
                     # Roll back piece_count so the mode session only gets
-                    # pieces that arrived before the burst window.
+                    # pieces that arrived before the burst window. Use the
+                    # real buffered length, not the COLOR_BURST_COUNT
+                    # constant -- a multi-piece frame can push burst_times
+                    # past the threshold in one jump (e.g. 8 -> 11), and the
+                    # extra pieces above the threshold still belong to the
+                    # burst hand-off, not left behind in the mode session.
+                    actual_burst_count = len(state.burst_times)
                     snap_burst_start   = state.burst_times[0]
-                    state.piece_count -= COLOR_BURST_COUNT
+                    state.piece_count -= actual_burst_count
                     snap_to_end        = state
                     del self._states[plant]
 
@@ -350,7 +359,7 @@ class ModeManager:
             self._end_session_db(snap_to_end, burst_start)
             print(f"[ModeManager] {plant} {snap_to_end.mode} ended — piece burst reached")
             from app.db.session_manager import session_manager
-            session_manager.start_burst_unaccounted(plant, burst_start, COLOR_BURST_COUNT)
+            session_manager.start_burst_unaccounted(plant, burst_start, actual_burst_count)
             return True
 
         # Heartbeat: push updated piece count to DB

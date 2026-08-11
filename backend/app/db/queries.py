@@ -803,6 +803,8 @@ def _batch_session_metrics(
     from_date: str,
     to_date: str,
     plants: list[str],
+    exclude_maintenance: bool = False,
+    include_live_session: bool = False,
 ) -> dict[tuple[str, str], dict]:
     """
     Returns {(date_str, plant): {run_s, idle_s, pieces}} for all requested
@@ -811,6 +813,23 @@ def _batch_session_metrics(
 
     Replaces per-call _session_metrics() in hot loops so endpoints that query
     multiple plants/dates don't open O(N) connections.
+
+    exclude_maintenance=False (default, used by get_plant_states/daily_summary)
+    keeps today's exact behavior untouched. exclude_maintenance=True (used only
+    by get_plant_wise) excludes MAINTENANCE sessions from run_s/idle_s entirely
+    -- tallied instead into maintenance_s/maintenance_pieces -- and subtracts
+    per-session overtime (time outside shift hours) into overtime_s, mirroring
+    get_daily_detail()'s already-shipped pattern.
+
+    include_live_session=False (default) keeps pieces sourced only from
+    COMPLETED sessions -- the run_s/idle_s math below needs a real EndTime
+    anyway, so that's the natural default. include_live_session=True (used
+    only by daily_summary) additionally adds today's currently-INPROCESS
+    session's live ProcessedPieces on top, purely to the pieces total --
+    without it, "In Session" stays frozen at zero contribution from whatever
+    session is still open, which understates it and inflates "Out of Session"
+    for as long as that session keeps running, even though those pieces were
+    never actually lost.
     """
     from datetime import date as _dt_date
     from collections import defaultdict
@@ -844,7 +863,8 @@ def _batch_session_metrics(
             cur = conn.cursor()
             cur.execute(
                 f"SELECT CAST(s.StartTime AS DATE), s.Plant, "
-                f"       s.StartTime, s.EndTime, s.ProcessedPieces "
+                f"       s.StartTime, s.EndTime, s.ProcessedPieces, "
+                f"       ISNULL(s.session_type, 'PRODUCTION') "
                 f"FROM dbo.AppSessions s "
                 f"WHERE s.StartTime >= ? AND s.StartTime < DATEADD(day, 1, ?) "
                 f"  AND s.Plant IN ({ph}) "
@@ -852,9 +872,10 @@ def _batch_session_metrics(
                 f"ORDER BY s.Plant, s.StartTime",
                 [from_date, to_date] + list(plants),
             )
-            for dv, plant_id, st, et, pcs in cur.fetchall():
+            for dv, plant_id, st, et, pcs, stype in cur.fetchall():
                 sessions_by_key[(str(dv), plant_id)].append(
-                    {"start_time": st, "end_time": et, "pieces": int(pcs or 0)}
+                    {"start_time": st, "end_time": et, "pieces": int(pcs or 0),
+                     "session_type": stype}
                 )
     except Exception:
         pass
@@ -878,6 +899,24 @@ def _batch_session_metrics(
     except Exception:
         pass
 
+    # ── Live in-progress session pieces (1 query, only if requested) ─────────
+    # Deliberately separate from the COMPLETED-only sessions query above --
+    # this never touches run_s/idle_s, only adds to today's pieces total.
+    live_pieces_by_plant: dict[str, int] = {}
+    if include_live_session:
+        try:
+            with get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    f"SELECT Plant, ProcessedPieces FROM dbo.AppSessions "
+                    f"WHERE Status = 'INPROCESS' AND Plant IN ({ph})",
+                    list(plants),
+                )
+                for plant, proc_pcs in cur.fetchall():
+                    live_pieces_by_plant[plant] = live_pieces_by_plant.get(plant, 0) + int(proc_pcs or 0)
+        except Exception:
+            pass
+
     # ── Off-day detection (weekly off + public holidays) ─────────────────────
     off_dates = _get_off_day_dates(from_date, to_date)
 
@@ -888,11 +927,15 @@ def _batch_session_metrics(
         if date_obj > today or d_str in off_dates:
             # Future dates and off days (weekly off / holidays) get zeros — no idle penalty.
             for plant in plants:
-                result[(d_str, plant)] = {"run_s": 0, "idle_s": 0, "break_s": 0, "pieces": 0}
+                zeros = {"run_s": 0, "idle_s": 0, "break_s": 0, "pieces": 0}
+                if exclude_maintenance:
+                    zeros.update({"maintenance_s": 0, "maintenance_pieces": 0, "overtime_s": 0})
+                result[(d_str, plant)] = zeros
             continue
 
         shift_start_dt = datetime(date_obj.year, date_obj.month, date_obj.day, sh, sm_min)
         shift_end_dt   = datetime(date_obj.year, date_obj.month, date_obj.day, eh, em)
+        shift_end_original_dt = shift_end_dt   # uncapped — used for overtime boundary
         if date_obj == today:
             shift_end_dt = min(shift_end_dt, _now)
 
@@ -902,10 +945,15 @@ def _batch_session_metrics(
             idle_periods = _merge_intervals(idle_by_key.get(key, []))
             eff_break    = _effective_break_window(date_obj, sessions)
 
-            run_s   = 0
-            idle_s  = 0
-            break_s = 0
+            run_s              = 0
+            idle_s             = 0
+            break_s            = 0
+            maintenance_s      = 0
+            maintenance_pieces = 0
+            overtime_s         = 0
             pieces  = sum(s["pieces"] for s in sessions)
+            if include_live_session and date_obj == today:
+                pieces += live_pieces_by_plant.get(plant, 0)
 
             if sessions and sessions[0]["start_time"] > shift_start_dt:
                 for kind, seg_a, seg_b in _split_gap(shift_start_dt, sessions[0]["start_time"], eff_break):
@@ -916,20 +964,33 @@ def _batch_session_metrics(
                         idle_s += seg
 
             for i, s in enumerate(sessions):
-                run_s += max(0, int((s["end_time"] - s["start_time"]).total_seconds()))
+                _is_maint = exclude_maintenance and s.get("session_type") == "MAINTENANCE"
+                _dur = max(0, int((s["end_time"] - s["start_time"]).total_seconds()))
 
-                for _ip_s, _ip_e in idle_periods:
-                    if _ip_e <= s["start_time"] - _SKEW:
-                        continue
-                    if _ip_s >= s["end_time"] + _SKEW:
-                        continue
-                    _cs = max(_ip_s, s["start_time"], shift_start_dt)
-                    _ce = min(_ip_e, s["end_time"],   shift_end_dt)
-                    if _ce > _cs:
-                        _dd = int((_ce - _cs).total_seconds())
-                        if _dd > 0:
-                            run_s  -= _dd
-                            idle_s += _dd
+                if _is_maint:
+                    maintenance_s      += _dur
+                    maintenance_pieces += s["pieces"]
+                else:
+                    run_s += _dur
+
+                    for _ip_s, _ip_e in idle_periods:
+                        if _ip_e <= s["start_time"] - _SKEW:
+                            continue
+                        if _ip_s >= s["end_time"] + _SKEW:
+                            continue
+                        _cs = max(_ip_s, s["start_time"], shift_start_dt)
+                        _ce = min(_ip_e, s["end_time"],   shift_end_dt)
+                        if _ce > _cs:
+                            _dd = int((_ce - _cs).total_seconds())
+                            if _dd > 0:
+                                run_s  -= _dd
+                                idle_s += _dd
+
+                    if exclude_maintenance:
+                        _ot_s, _ = _calc_overtime(
+                            s["start_time"], s["end_time"], shift_start_dt, shift_end_original_dt)
+                        overtime_s += _ot_s
+                        run_s      -= _ot_s
 
                 if i < len(sessions) - 1:
                     # Clip inter-session gap to shift hours — idle outside shift not counted
@@ -961,6 +1022,10 @@ def _batch_session_metrics(
 
             result[key] = {"run_s": max(0, run_s), "idle_s": max(0, idle_s),
                             "break_s": break_s, "pieces": pieces}
+            if exclude_maintenance:
+                result[key]["maintenance_s"]      = maintenance_s
+                result[key]["maintenance_pieces"] = maintenance_pieces
+                result[key]["overtime_s"]         = max(0, overtime_s)
 
     return result
 
@@ -1130,10 +1195,11 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
             _dur = max(0, int((_s["end_time"] - _s["start_time"]).total_seconds()))
             _st = _s["session_type"]
             if _st == "MAINTENANCE":
+                # Still gets a row (same as WASHING/COLOR_MATCHING below) --
+                # only the totals stay footer-only: its duration was never
+                # part of break_s/run_s/idle_s and still isn't.
                 maintenance_s      += _dur
                 maintenance_pieces += _s["pieces"]
-                pieces             += _s["pieces"]
-                continue   # no row, even nested under BREAK TIME
             _break_sub_rows.append({
                 "row_type":       "session",
                 "lot_no":         _st.replace("_", " "),
@@ -1172,7 +1238,8 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
                 _stype = s.get("session_type", "PRODUCTION")
 
                 if _stype == "MAINTENANCE":
-                    # No row, no run/idle contribution -- tallied into the
+                    # Gets a row like WASHING/COLOR_MATCHING below, but no
+                    # run/idle contribution -- still tallied into the
                     # footer-only maintenance total instead. Still left in
                     # _main_sessions (not filtered out) so the idle-gap
                     # calculation immediately below still starts counting
@@ -1180,6 +1247,20 @@ def get_daily_detail(report_date: str, plant: str | None = None) -> dict:
                     # after swallowing this window as idle.
                     maintenance_s      += dur_s
                     maintenance_pieces += s["pieces"]
+                    rows_out.append({
+                        "row_type":       "session",
+                        "lot_no":         _stype.replace("_", " "),
+                        "session_type":   _stype,
+                        "order_no":       s["order_no"]     or "N/A",
+                        "party_name":     s["party_name"]   or "N/A",
+                        "article_name":   s["article_name"] or "N/A",
+                        "colour_name":    s["colour_name"]  or "N/A",
+                        "pieces":         s["pieces"],
+                        "plant":          plant_id,
+                        "start_time":     s["start_time"].strftime("%H:%M"),
+                        "end_time":       s["end_time"].strftime("%H:%M"),
+                        "duration_label": _fmt_duration(dur_s),
+                    })
                 else:
                     run_s += dur_s
                     _label = (
@@ -1287,7 +1368,7 @@ def get_plant_wise(from_date: str, to_date: str, plant: str | None = None) -> li
 
     frame_metrics   = get_frame_metrics(from_date, to_date, plant=plant)   # pieces only
     units           = [plant] if plant else UNITS
-    session_metrics = _batch_session_metrics(from_date, to_date, units)
+    session_metrics = _batch_session_metrics(from_date, to_date, units, exclude_maintenance=True)
     off_dates       = _get_off_day_dates(from_date, to_date)
 
     d0 = _date.fromisoformat(from_date)
@@ -1302,24 +1383,35 @@ def get_plant_wise(from_date: str, to_date: str, plant: str | None = None) -> li
             d += timedelta(days=1)
             continue
         for unit in units:
-            sm         = session_metrics.get((d_str, unit), {"run_s": 0, "idle_s": 0})
-            run_s      = sm["run_s"]
-            idle_s     = sm["idle_s"]
-            fm         = frame_metrics.get((d_str, unit), {"pieces": 0})
+            sm = session_metrics.get((d_str, unit), {
+                "run_s": 0, "idle_s": 0,
+                "maintenance_s": 0, "maintenance_pieces": 0, "overtime_s": 0,
+            })
+            run_s              = sm["run_s"]
+            idle_s             = sm["idle_s"]
+            maintenance_s      = sm.get("maintenance_s", 0)
+            maintenance_pieces = sm.get("maintenance_pieces", 0)
+            overtime_s         = sm.get("overtime_s", 0)
+            fm                 = frame_metrics.get((d_str, unit), {"pieces": 0})
             # Skip days with no data at all
-            if run_s == 0 and idle_s == 0 and fm["pieces"] == 0:
+            if run_s == 0 and idle_s == 0 and maintenance_s == 0 and fm["pieces"] == 0:
                 continue
             observed_s = run_s + idle_s
             util_pct   = round(run_s / observed_s * 100, 1) if observed_s else 0
             result.append({
-                "date":             d_str,
-                "plant":            unit,
-                "run_time_label":   _fmt_duration(int(run_s)),
-                "idle_time_label":  _fmt_duration(int(idle_s)),
-                "run_time_s":       int(run_s),
-                "idle_time_s":      int(idle_s),
-                "pieces":           fm["pieces"],
-                "utilization_pct":  util_pct,
+                "date":                d_str,
+                "plant":               unit,
+                "run_time_label":      _fmt_duration(int(run_s)),
+                "idle_time_label":     _fmt_duration(int(idle_s)),
+                "run_time_s":          int(run_s),
+                "idle_time_s":         int(idle_s),
+                "pieces":              fm["pieces"],
+                "utilization_pct":     util_pct,
+                "maintenance_s":       int(maintenance_s),
+                "maintenance_label":   _fmt_duration(int(maintenance_s)) if maintenance_s > 0 else None,
+                "maintenance_pieces":  int(maintenance_pieces),
+                "overtime_s":          int(overtime_s),
+                "overtime_label":      _fmt_duration(int(overtime_s)) if overtime_s > 0 else None,
             })
         d += timedelta(days=1)
     return result
