@@ -15,10 +15,12 @@ from io import BytesIO
 from pathlib import Path
 
 import openpyxl
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi.responses import StreamingResponse, HTMLResponse
 from openpyxl.styles import Alignment, Font, PatternFill
 from pydantic import BaseModel
+from app.auth import require_admin
+from app.services import email_service
 
 # ── Sibling package paths (used only by send/preview endpoints) ───────────────
 _ROOT   = Path(__file__).resolve().parents[3]   # spray-plant/
@@ -597,3 +599,154 @@ def download_report_excel(
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ── New Daily Summary Email & Preview Endpoints ───────────────────────────────
+
+@router.get("/preview-daily-email", response_class=HTMLResponse)
+def preview_daily_email(
+    date_param: str = Query(str(_date.today()), alias="date"),
+    role: str = Query("DIRECTOR", description="MANAGER or DIRECTOR"),
+    plants: str = Query("SP-01,SP-02,SP-03,SP-04,SP-05,SP-06", description="Comma-separated plant units")
+):
+    """
+    Renders the daily summary email HTML template for visual review in browser.
+    No auth required for quick localhost previews.
+    """
+    plant_list = [p.strip().upper() for p in plants.split(",") if p.strip()]
+    if not plant_list:
+        plant_list = UNITS
+        
+    try:
+        report_data = email_service.get_report_data(date_param, plant_list)
+        plants_label = "All Plants" if role.upper() == "DIRECTOR" else ", ".join(plant_list)
+        
+        html = email_service.render_html_template(
+            recipient_name=f"Test {role.capitalize()}",
+            date_str=date_param,
+            plants_label=plants_label,
+            data=report_data
+        )
+        return html
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate preview: {str(e)}")
+
+
+@router.post("/send-daily-summary", dependencies=[Depends(require_admin)])
+def send_daily_summary(date_param: str = Query(str(_date.today()), alias="date")):
+    """
+    Trigger manual sending of the daily summary email report to all configured recipients.
+    Only accessible by administrators with valid Clerk session tokens.
+    """
+    try:
+        # Fetch recipients from database
+        recipients = []
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT name, email, role, allocated_plants FROM dbo.EmailRecipients")
+            for name, email, role, allocated_plants in cur.fetchall():
+                recipients.append({
+                    "name": name,
+                    "email": email,
+                    "role": role.upper(),
+                    "allocated_plants": allocated_plants
+                })
+
+        if not recipients:
+            return {"status": "success", "message": "No email recipients configured. No emails sent."}
+
+        # Divide into managers and directors
+        managers = [r for r in recipients if r["role"] == "MANAGER"]
+        directors = [r for r in recipients if r["role"] == "DIRECTOR"]
+
+        sent_count = 0
+        failed_count = 0
+
+        # Helper to safely send email
+        def _try_send(to_email, subject, html_content):
+            nonlocal sent_count, failed_count
+            ok, _ = email_service.send_email(to_email, subject, html_content)
+            if ok:
+                sent_count += 1
+            else:
+                failed_count += 1
+
+        # 1. Process Managers (send only their allocated plants)
+        manager_reports = []  # Keep track of the HTML reports sent to managers
+        for mgr in managers:
+            plants_str = mgr.get("allocated_plants") or ""
+            plant_list = [p.strip().upper() for p in plants_str.split(",") if p.strip()]
+            if not plant_list:
+                continue  # Skip manager if no plants assigned
+
+            report_data = email_service.get_report_data(date_param, plant_list)
+            html = email_service.render_html_template(
+                recipient_name=mgr["name"],
+                date_str=date_param,
+                plants_label=", ".join(plant_list),
+                data=report_data
+            )
+            subject = f"Spray Plant Production Summary - {date_param} ({', '.join(plant_list)})"
+            
+            # Send to manager
+            _try_send(mgr["email"], subject, html)
+            manager_reports.append((mgr["name"], subject, html))
+
+        # 2. Process Directors (send full report, plus copies of manager reports)
+        if directors:
+            # Generate the master report (all plants)
+            master_data = email_service.get_report_data(date_param, UNITS)
+            master_html = email_service.render_html_template(
+                recipient_name="Director",
+                date_str=date_param,
+                plants_label="All Plants",
+                data=master_data
+            )
+            master_subject = f"Spray Plant Master Production Summary - {date_param}"
+
+            for dtr in directors:
+                # Send the master report
+                _try_send(dtr["email"], master_subject, master_html)
+
+                # Send the manager reports copies
+                for mgr_name, subject, html in manager_reports:
+                    copy_subject = f"[Copy] {subject}"
+                    # Wrap copy slightly to indicate it's a copy
+                    copy_html = html.replace(
+                        "Reports</p>",
+                        f"Reports</p><div style='background: #ffeb3b; color: #333; text-align: center; padding: 5px; font-size: 11px; font-weight: bold;'>Copy of Manager Report sent to {mgr_name}</div>"
+                    )
+                    _try_send(dtr["email"], copy_subject, copy_html)
+
+        return {
+            "status": "success",
+            "message": f"Daily summary email dispatch completed.",
+            "sent": sent_count,
+            "failed": failed_count
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Email dispatch failed: {str(e)}")
+
+
+@router.api_route("/send-test-email", methods=["GET", "POST"], dependencies=[Depends(require_admin)])
+def send_test_email(to_email: str = Query(..., description="Recipient email address")):
+    """
+    Sends a simple test email to verify SMTP server credentials.
+    Supports both GET and POST.
+    """
+    subject = "Spray Plant Monitoring System - SMTP Connection Test"
+    html_content = """
+    <html>
+    <body style="font-family: Arial, sans-serif; padding: 20px;">
+        <h2 style="color: #0c2340;">SMTP Configuration Test Successful</h2>
+        <p>Your Spray Plant Monitoring System daily reports email integration is working correctly.</p>
+        <hr style="border: 0; border-top: 1px solid #ddd; margin: 20px 0;">
+        <p style="font-size: 11px; color: #777;">Dada Enterprises, Kasur</p>
+    </body>
+    </html>
+    """
+    ok, err_msg = email_service.send_email(to_email, subject, html_content)
+    if ok:
+        return {"status": "ok", "message": f"Test email sent successfully to {to_email}"}
+    else:
+        raise HTTPException(status_code=500, detail=f"Failed to send test email: {err_msg}")

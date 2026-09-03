@@ -693,12 +693,25 @@ def _plant_worker(
 ) -> None:
     db_unit  = UNIT_MAP.get(unit, unit)
     cfg_src  = _get_unit_source(unit_configs, unit)
-    sources  = _resolve_sources(cfg_src) if cfg_src else sorted((VIDEOS_DIR / unit).glob("*.mp4")) if (VIDEOS_DIR / unit).is_dir() else []
     unit_conf = _get_unit_conf(unit_configs, unit)
     print(f"[{unit}] Confidence threshold: {unit_conf}")
 
-    if not sources:
-        print(f"[{unit}] No source found — worker exiting.")
+    # Resolve the camera source. On a live deployment the source is always an
+    # RTSP URL — never fall back to local video files. If no source is configured
+    # yet, or the configured path can't be resolved, keep retrying every 30 s
+    # instead of exiting (camera may just be powered off at startup time).
+    sources: list = []
+    while not sources and not stop_event.is_set():
+        if cfg_src:
+            sources = _resolve_sources(cfg_src)
+            if sources:
+                break
+            print(f"[{unit}] Source '{cfg_src}' not reachable — retrying in 30s...")
+        else:
+            print(f"[{unit}] No source configured in unit_configs.json — retrying in 30s...")
+        stop_event.wait(30)
+
+    if stop_event.is_set():
         return
 
     tracker  = SimpleIoUTracker(iou_thresh=0.25, max_age=20)
@@ -1228,6 +1241,7 @@ def main() -> None:
     _repositioned   = False
     _frames_seen    = 0             # count total frames shown; reposition after first batch
 
+    exit_reason = "Unknown / crash / external termination"
     try:
         # Main display loop — must run on main thread (Windows cv2 requirement)
         while not stop_event.is_set():
@@ -1246,19 +1260,29 @@ def main() -> None:
 
             key = cv2.waitKey(1) & 0xFF
             if key == 27:   # ESC
-                print("\nESC pressed — stopping all plants...")
+                exit_reason = "ESC key pressed by user"
+                print(f"\n{exit_reason} — stopping all plants...")
                 stop_event.set()
                 break
 
             if STOP_SIGNAL_FILE.exists():
-                print("\nStop signal received — stopping all plants...")
+                exit_reason = "Stop signal file (.stop_signal) detected"
+                print(f"\n{exit_reason} — stopping all plants...")
                 stop_event.set()
                 break
 
             # Exit cleanly if all workers finished naturally (e.g. all videos done)
             if all(not t.is_alive() for t in threads):
+                exit_reason = "All camera/video worker threads exited naturally"
                 break
+    except KeyboardInterrupt:
+        exit_reason = "KeyboardInterrupt (Ctrl+C) received"
+        raise
+    except Exception as e:
+        exit_reason = f"Fatal Exception: {type(e).__name__} - {str(e)}"
+        raise
     finally:
+        print(f"\n[log] Exit Reason: {exit_reason}")
         # Always end active sessions with an accurate timestamp before exiting —
         # covers ESC, the stop-signal file, natural worker exit, and Ctrl+C.
         stop_event.set()

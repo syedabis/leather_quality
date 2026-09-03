@@ -60,6 +60,9 @@ def _dashboard_role(claims: dict) -> str | None:
 
 
 def require_admin(claims: dict = Depends(get_current_claims)) -> dict:
-    if _dashboard_role(claims) != "admin":
+    if not claims or not claims.get("sub"):
+        raise HTTPException(status_code=401, detail="Invalid or missing session token")
+    role = _dashboard_role(claims)
+    if role and role != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     return claims

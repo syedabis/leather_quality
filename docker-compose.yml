@@ -1,5 +1,5 @@
 # All credentials and image tags come from the .env file next to this compose file.
-# SQL Server runs externally at 172.16.0.2\SQLEXPRESS — no sqlserver container needed.
+# SQL Server runs locally on this same PC (Plant,1433) — no sqlserver container needed.
 # To deploy on a new machine: docker compose pull && docker compose up -d
 
 services:
@@ -12,9 +12,9 @@ services:
     env_file:
       - .env
     environment:
-      DB_SERVER: 172.16.0.2\SQLEXPRESS
+      DB_SERVER: ${DB_SERVER:-Plant,1433}
       DB_NAME: ${DB_NAME:-nEXP1314}
-      DB_USER: ${DB_USER:-dadasa}
+      DB_USER: ${DB_USER:-sa}
       DB_PASSWORD: ${DB_PASSWORD}
       # Container default is UTC. Force the local plant timezone so
       # datetime.now() (used for break-window / holiday / off-day checks)

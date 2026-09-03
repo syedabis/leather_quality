@@ -57,6 +57,7 @@ interface DetailData  { date: string; plants: DetailPlant[]; }
 
 interface PlantWiseRow {
   date: string; plant: string; run_time_label: string; idle_time_label: string;
+  run_time_s: number; idle_time_s: number;
   pieces: number; utilization_pct: number;
   maintenance_s?: number; maintenance_label?: string | null; maintenance_pieces?: number;
   overtime_s?: number; overtime_label?: string | null;
@@ -472,6 +473,81 @@ function DailyDetailTab() {
   );
 }
 
+// ── Multi-plant checkbox dropdown ────────────────────────────────────────────
+
+function MultiPlantSelect({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
+  const [open, setOpen] = React.useState(false);
+  const ref = React.useRef<HTMLDivElement>(null);
+
+  // Close on outside click
+  React.useEffect(() => {
+    function handler(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const allSelected = value.length === 0 || value.length === PLANTS.length;
+  const label = allSelected ? 'All Plants' : value.length === 1 ? value[0] : `${value.length} Plants`;
+
+  function toggle(p: string) {
+    if (value.includes(p)) {
+      const next = value.filter(x => x !== p);
+      onChange(next.length === PLANTS.length ? [] : next);
+    } else {
+      const next = [...value, p];
+      onChange(next.length === PLANTS.length ? [] : next);
+    }
+  }
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-2 border border-gray-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm
+                   bg-white dark:bg-[#111] text-gray-900 dark:text-white
+                   focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[130px] justify-between"
+      >
+        <span>{label}</span>
+        <svg className={`w-4 h-4 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
+      </button>
+      {open && (
+        <div className="absolute z-20 mt-1 w-44 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-white/10 rounded-lg shadow-lg py-1">
+          {/* All Plants toggle */}
+          <button
+            onClick={() => onChange([])}
+            className={`w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-gray-50 dark:hover:bg-[#111] transition-colors ${
+              allSelected ? 'font-semibold text-blue-600 dark:text-blue-400' : 'text-gray-700 dark:text-gray-300'
+            }`}
+          >
+            <span className={`w-4 h-4 rounded border flex items-center justify-center text-xs ${
+              allSelected ? 'bg-blue-600 border-blue-600 text-white' : 'border-gray-300 dark:border-white/20'
+            }`}>{allSelected && '✓'}</span>
+            All Plants
+          </button>
+          <div className="border-t border-gray-100 dark:border-white/5 my-1" />
+          {PLANTS.map(p => {
+            const checked = value.includes(p);
+            return (
+              <button
+                key={p}
+                onClick={() => toggle(p)}
+                className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-gray-50 dark:hover:bg-[#111] transition-colors text-gray-700 dark:text-gray-300"
+              >
+                <span className={`w-4 h-4 rounded border flex items-center justify-center text-xs flex-shrink-0 ${
+                  checked ? 'bg-blue-600 border-blue-600 text-white' : 'border-gray-300 dark:border-white/20'
+                }`}>{checked && '✓'}</span>
+                {p}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Tab 3: Plant Wise ──────────────────────────────────────────────────────
 
 function PlantWiseTab() {
@@ -480,37 +556,52 @@ function PlantWiseTab() {
   const [error, setError]       = useState<string | null>(null);
   const [fromDate, setFromDate] = useState(today);
   const [toDate, setToDate]     = useState(today);
-  const [plant, setPlant]       = useState('');
+  const [selectedPlants, setSelectedPlants] = useState<string[]>([]);
 
   const load = useCallback(() => {
     setLoading(true); setError(null);
     const qs = new URLSearchParams({ from: fromDate, to: toDate });
-    if (plant) qs.set('plant', plant);
     fetch(`${API}/api/reports/plant-wise?${qs}`, { cache: 'no-store' })
       .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
       .then(setData).catch(e => setError(String(e))).finally(() => setLoading(false));
-  }, [fromDate, toDate, plant]);
+  }, [fromDate, toDate]);
 
   useEffect(() => { load(); }, [load]);
 
-  const rows   = data?.rows ?? [];
-  const dlQs   = new URLSearchParams({ type: 'plant_wise', date: fromDate, from: fromDate, to: toDate, ...(plant ? { plant } : {}) });
+  const rawRows = data?.rows ?? [];
+  const filteredRows = selectedPlants.length > 0 ? rawRows.filter(r => selectedPlants.includes(r.plant)) : rawRows;
+  
+  const dlQs   = new URLSearchParams({ type: 'plant_wise', from: fromDate, to: toDate });
   const dlUrl  = `${API}/api/reports/download?${dlQs}`;
+
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-3">
         <DateInput value={fromDate} onChange={setFromDate} label="From" />
         <DateInput value={toDate}   onChange={setToDate}   label="To" />
-        <PlantSelect value={plant} onChange={setPlant} />
-        <DownloadButton href={dlUrl} disabled={loading || rows.length === 0} />
+        <MultiPlantSelect value={selectedPlants} onChange={setSelectedPlants} />
+        <DownloadButton href={dlUrl} disabled={loading || rawRows.length === 0} />
       </div>
+
+      {/* Active filter pills */}
+      {selectedPlants.length > 0 && selectedPlants.length < PLANTS.length && (
+        <div className="flex flex-wrap gap-2">
+          {selectedPlants.map(p => (
+            <span key={p} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">
+              {p}
+              <button onClick={() => setSelectedPlants(prev => prev.filter(x => x !== p))} className="ml-0.5 opacity-60 hover:opacity-100">×</button>
+            </span>
+          ))}
+          <button onClick={() => setSelectedPlants([])} className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 underline">Clear filter</button>
+        </div>
+      )}
 
       {error && <Err msg={error} />}
       {loading && <Loader />}
-      {!loading && !error && rows.length === 0 && <Empty />}
+      {!loading && !error && rawRows.length === 0 && <Empty />}
 
-      {!loading && rows.length > 0 && (
+      {!loading && rawRows.length > 0 && (
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
           <Card>
             <SectionHeader title="Plant Wise Report" />
@@ -520,7 +611,7 @@ function PlantWiseTab() {
                   <tr>{['Date','Plant','Total Run Time','Total Idle Time','Maintenance','Overtime','Pieces Processed','Utilisation %'].map(h=><Th key={h}>{h}</Th>)}</tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-white/5">
-                  {rows.map((r, i) => (
+                  {filteredRows.map((r, i) => (
                     <tr key={i} className="hover:bg-gray-50 dark:hover:bg-[#1a1a1a] transition-colors">
                       <Td className="text-gray-700 dark:text-gray-300">{r.date}</Td>
                       <Td className="font-semibold text-gray-900 dark:text-white">{r.plant}</Td>
@@ -539,6 +630,39 @@ function PlantWiseTab() {
                 </tbody>
               </table>
             </div>
+            {/* ── Footer totals ─────────────────────────────────────────── */}
+            {(() => {
+              const totalRun    = filteredRows.reduce((s, r) => s + (r.run_time_s  ?? 0), 0);
+              const totalIdle   = filteredRows.reduce((s, r) => s + (r.idle_time_s ?? 0), 0);
+              const totalMaintS = filteredRows.reduce((s, r) => s + (r.maintenance_s ?? 0), 0);
+              const totalMaintP = filteredRows.reduce((s, r) => s + (r.maintenance_pieces ?? 0), 0);
+              const totalOT     = filteredRows.reduce((s, r) => s + (r.overtime_s  ?? 0), 0);
+              const totalPcs    = filteredRows.reduce((s, r) => s + r.pieces, 0);
+              const utilRows    = filteredRows.filter(r => (r.run_time_s ?? 0) + (r.idle_time_s ?? 0) > 0);
+              const avgUtil     = utilRows.length > 0
+                ? (utilRows.reduce((s, r) => s + r.utilization_pct, 0) / utilRows.length).toFixed(1)
+                : '0.0';
+              return (
+                <div className="bg-gray-50 dark:bg-[#1a1a1a] border-t border-gray-200 dark:border-white/10 px-6 py-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 text-sm">
+                  {[
+                    { label: 'Total Run Time',  value: fmtHHMMSS(totalRun),  color: '' },
+                    { label: 'Total Idle Time', value: fmtHHMMSS(totalIdle), color: '' },
+                    { label: 'Maintenance',     value: totalMaintS > 0 ? `${fmtHHMMSS(totalMaintS)} · ${totalMaintP.toLocaleString()} pcs` : '—', color: 'text-sky-600 dark:text-sky-400' },
+                    { label: 'Overtime',        value: totalOT > 0 ? fmtHHMMSS(totalOT) : '—', color: 'text-orange-600 dark:text-orange-400' },
+                    { label: 'Total Pieces',    value: totalPcs.toLocaleString(), color: 'text-gray-900 dark:text-white' },
+                    { label: 'Avg Utilisation', value: `${avgUtil}%`,
+                      color: Number(avgUtil) >= 70 ? 'text-emerald-600 dark:text-emerald-400'
+                           : Number(avgUtil) >= 40 ? 'text-amber-600 dark:text-amber-400'
+                           : 'text-red-500 dark:text-red-400' },
+                  ].map(({ label, value, color }) => (
+                    <div key={label} className="text-center">
+                      <p className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">{label}</p>
+                      <p className={`font-semibold mt-0.5 ${color || 'text-gray-700 dark:text-gray-300'}`}>{value}</p>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
           </Card>
         </motion.div>
       )}

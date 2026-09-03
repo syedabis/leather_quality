@@ -20,6 +20,23 @@ $NETWORK_URL = if ($lanIP) { "http://${lanIP}:3000" } else { "(IP not detected)"
 $ErrorActionPreference = "SilentlyContinue"
 $inferenceProc = $null
 
+# ── Guard: block a second instance ────────────────────────────────────────────
+# If another launch.ps1 is already running (from a bat-file click that was never
+# properly closed), show a warning popup and exit immediately instead of letting
+# the new instance's Stop-All kill the running inference.
+$_running = Get-WmiObject Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match "powershell" -and $_.CommandLine -like "*launch.ps1*" -and $_.ProcessId -ne $PID }
+if ($_running) {
+    Add-Type -AssemblyName System.Windows.Forms
+    [System.Windows.Forms.MessageBox]::Show(
+        "Spray Plant is already running!`n`nClose the existing launcher window first, then try again.",
+        "Already Running",
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Warning
+    ) | Out-Null
+    exit 0
+}
+
 function Stop-All {
     Write-Host ""
     Write-Host "  Stopping system..." -ForegroundColor Yellow

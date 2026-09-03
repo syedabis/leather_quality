@@ -29,6 +29,8 @@ export default function Settings() {
     return token ? { Authorization: `Bearer ${token}` } : {};
   }, [getToken]);
 
+  const role = getDashboardAccess(user?.publicMetadata).role ?? undefined;
+
   const [firstName, setFirstName] = useState(user?.firstName ?? '');
   const [lastName,  setLastName]  = useState(user?.lastName  ?? '');
   const [preview,   setPreview]   = useState<string | null>(null);
@@ -68,6 +70,20 @@ export default function Settings() {
   const [targetBusy,      setTargetBusy]     = useState(false);
   const [targetStatus,    setTargetStatus]   = useState<'idle' | 'success' | 'error'>('idle');
 
+  // Email Configuration state
+  const [recipients,         setRecipients]          = useState<{id: number; name: string; email: string; role: string; allocated_plants: string | null}[]>([]);
+  const [newRecName,         setNewRecName]          = useState('');
+  const [newRecEmail,        setNewRecEmail]         = useState('');
+  const [newRecRole,         setNewRecRole]          = useState('MANAGER');
+  const [newRecPlants,       setNewRecPlants]        = useState<string[]>([]);
+  const [recBusy,            setRecBusy]             = useState(false);
+  const [recStatus,          setRecStatus]           = useState<'idle' | 'success' | 'error'>('idle');
+  const [testEmailAddress,   setTestEmailAddress]    = useState('');
+  const [testEmailStatus,    setTestEmailStatus]     = useState<'idle' | 'success' | 'error'>('idle');
+  const [dispatchingSummary, setDispatchingSummary]  = useState(false);
+  const [dispatchStatus,     setDispatchStatus]     = useState<'idle' | 'success' | 'error'>('idle');
+  const [dispatchMsg,        setDispatchMsg]        = useState('');
+
   const fileRef = useRef<HTMLInputElement>(null);
 
   // Load system settings + holidays on mount
@@ -101,6 +117,23 @@ export default function Settings() {
       .then(setTargets)
       .catch(() => {});
   }, []);
+
+  const loadRecipients = useCallback(async () => {
+    try {
+      const headers = await authHeaders();
+      const res = await fetch(`${API_URL}/api/settings/email-recipients`, { headers, cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        setRecipients(data);
+      }
+    } catch (e) {}
+  }, [authHeaders]);
+
+  useEffect(() => {
+    if (role === 'admin') {
+      loadRecipients();
+    }
+  }, [role, loadRecipients]);
 
   const handleSaveSystemSettings = useCallback(async () => {
     setSettingsSaving(true);
@@ -211,6 +244,109 @@ export default function Settings() {
     }
   }, []);
 
+  const handleAddRecipient = async () => {
+    if (!newRecName || !newRecEmail) return;
+    setRecBusy(true);
+    setRecStatus('idle');
+    try {
+      const headers = await authHeaders();
+      const plantsCsv = newRecRole === 'MANAGER' ? newRecPlants.join(',') : null;
+      const res = await fetch(`${API_URL}/api/settings/email-recipients`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({
+          name: newRecName,
+          email: newRecEmail,
+          role: newRecRole,
+          allocated_plants: plantsCsv
+        })
+      });
+      if (res.ok) {
+        setRecStatus('success');
+        setNewRecName('');
+        setNewRecEmail('');
+        setNewRecPlants([]);
+        loadRecipients();
+        setTimeout(() => setRecStatus('idle'), 3000);
+      } else {
+        setRecStatus('error');
+        setTimeout(() => setRecStatus('idle'), 3000);
+      }
+    } catch (e) {
+      setRecStatus('error');
+      setTimeout(() => setRecStatus('idle'), 3000);
+    } finally {
+      setRecBusy(false);
+    }
+  };
+
+  const handleDeleteRecipient = async (id: number) => {
+    setRecBusy(true);
+    try {
+      const headers = await authHeaders();
+      const res = await fetch(`${API_URL}/api/settings/email-recipients/${id}`, {
+        method: 'DELETE',
+        headers
+      });
+      if (res.ok) {
+        loadRecipients();
+      }
+    } catch (e) {
+    } finally {
+      setRecBusy(false);
+    }
+  };
+
+  const handleSendTestEmail = async () => {
+    if (!testEmailAddress) return;
+    setTestEmailStatus('idle');
+    try {
+      const headers = await authHeaders();
+      const res = await fetch(`${API_URL}/api/reports/send-test-email?to_email=${encodeURIComponent(testEmailAddress)}`, {
+        method: 'POST',
+        headers
+      });
+      if (res.ok) {
+        setTestEmailStatus('success');
+        setTestEmailAddress('');
+        setTimeout(() => setTestEmailStatus('idle'), 4000);
+      } else {
+        setTestEmailStatus('error');
+        setTimeout(() => setTestEmailStatus('idle'), 4000);
+      }
+    } catch (e) {
+      setTestEmailStatus('error');
+      setTimeout(() => setTestEmailStatus('idle'), 4000);
+    }
+  };
+
+  const handleDispatchSummary = async () => {
+    setDispatchingSummary(true);
+    setDispatchStatus('idle');
+    try {
+      const headers = await authHeaders();
+      const res = await fetch(`${API_URL}/api/reports/send-daily-summary`, {
+        method: 'POST',
+        headers
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setDispatchMsg(`Reports dispatched successfully! (${data.sent || 0} sent, ${data.failed || 0} failed)`);
+        setDispatchStatus('success');
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setDispatchMsg(err.detail || 'Failed to dispatch summary reports');
+        setDispatchStatus('error');
+      }
+    } catch (e) {
+      setDispatchMsg('Failed to connect to backend server');
+      setDispatchStatus('error');
+    } finally {
+      setDispatchingSummary(false);
+      setTimeout(() => setDispatchStatus('idle'), 5000);
+    }
+  };
+
   const nameInitials = (user?.firstName?.[0] ?? '') + (user?.lastName?.[0] ?? '');
   const initials = nameInitials || (user?.primaryEmailAddress?.emailAddress?.[0]?.toUpperCase() ?? '?');
 
@@ -255,7 +391,6 @@ export default function Settings() {
     );
   }
 
-  const role  = getDashboardAccess(user?.publicMetadata).role ?? undefined;
   const email = user?.primaryEmailAddress?.emailAddress ?? '';
 
   const avatarSrc = preview ?? user?.imageUrl;
@@ -823,6 +958,227 @@ export default function Settings() {
                 </table>
               </div>
             )}
+          </motion.div>
+        )}
+
+        {/* ── Email Configuration (admin only) ─────────────────────────── */}
+        {role === 'admin' && (
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.22 }}
+            className="bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-2xl p-6 shadow-sm space-y-6"
+          >
+            <div>
+              <div className="flex items-center gap-2 mb-2">
+                <FiMail className="w-4 h-4 text-[#2AAA8A]" />
+                <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-widest">Email Configuration</p>
+              </div>
+              <p className="text-[11px] text-gray-400">
+                Configure recipients for daily production summary emails. Managers receive summaries for their allocated plants only, while Directors receive master summaries + copies of manager emails.
+              </p>
+            </div>
+
+            {/* Form to add recipient */}
+            <div className="space-y-3 p-4 bg-gray-50 dark:bg-[#111111] rounded-2xl border border-gray-100 dark:border-[#2c2c2c]">
+              <p className="text-xs font-bold text-gray-700 dark:text-gray-300">Add New Recipient</p>
+              <div className="grid grid-cols-12 gap-2">
+                <input
+                  type="text"
+                  placeholder="Full Name"
+                  value={newRecName}
+                  onChange={e => setNewRecName(e.target.value)}
+                  className="col-span-4 px-3 py-2 text-xs bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-xl
+                    text-gray-900 dark:text-white focus:outline-none focus:border-[#2AAA8A] transition-all"
+                />
+                <input
+                  type="email"
+                  placeholder="email@example.com"
+                  value={newRecEmail}
+                  onChange={e => setNewRecEmail(e.target.value)}
+                  className="col-span-5 px-3 py-2 text-xs bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-xl
+                    text-gray-900 dark:text-white focus:outline-none focus:border-[#2AAA8A] transition-all"
+                />
+                <select
+                  value={newRecRole}
+                  onChange={e => {
+                    setNewRecRole(e.target.value);
+                    if (e.target.value === 'DIRECTOR') setNewRecPlants([]);
+                  }}
+                  className="col-span-3 px-3 py-2 text-xs bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-xl
+                    text-gray-900 dark:text-white focus:outline-none focus:border-[#2AAA8A] transition-all"
+                >
+                  <option value="MANAGER">Manager</option>
+                  <option value="DIRECTOR">Director</option>
+                </select>
+              </div>
+
+              {newRecRole === 'MANAGER' && (
+                <div className="space-y-1.5">
+                  <label className="block text-[10px] font-semibold uppercase tracking-wider text-gray-400">Allocated Plants</label>
+                  <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+                    {['SP-01','SP-02','SP-03','SP-04','SP-05','SP-06'].map(p => (
+                      <label key={p} className="inline-flex items-center gap-1.5 text-xs text-gray-700 dark:text-gray-300 select-none cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={newRecPlants.includes(p)}
+                          onChange={e => {
+                            if (e.target.checked) setNewRecPlants([...newRecPlants, p]);
+                            else setNewRecPlants(newRecPlants.filter(x => x !== p));
+                          }}
+                          className="rounded border-gray-300 dark:border-[#2c2c2c] text-[#2AAA8A] focus:ring-[#2AAA8A]"
+                        />
+                        {p}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-end pt-1">
+                <button
+                  onClick={handleAddRecipient}
+                  disabled={!newRecName || !newRecEmail || recBusy}
+                  className="inline-flex items-center gap-1 px-4 py-2 bg-[#2AAA8A] hover:bg-[#249978] text-white text-xs font-semibold rounded-xl
+                    disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                >
+                  <FiPlus className="w-3.5 h-3.5" /> Save Recipient
+                </button>
+              </div>
+
+              {recStatus !== 'idle' && (
+                <div className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium border ${
+                  recStatus === 'success'
+                    ? 'bg-green-50 border-green-200 text-green-700'
+                    : 'bg-red-50 border-red-200 text-red-600'
+                }`}>
+                  {recStatus === 'success'
+                    ? <><FiCheck className="w-3.5 h-3.5" /> Recipient saved successfully</>
+                    : <><FiAlertCircle className="w-3.5 h-3.5" /> Failed to save recipient</>}
+                </div>
+              )}
+            </div>
+
+            {/* Test Email & Manual Dispatch utilities */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="p-4 bg-gray-50 dark:bg-[#111111] rounded-2xl border border-gray-100 dark:border-[#2c2c2c] space-y-3">
+                <div>
+                  <p className="text-xs font-bold text-gray-700 dark:text-gray-300">Test SMTP Configuration</p>
+                  <p className="text-[10px] text-gray-400">Send a connection test email to verify SMTP host settings.</p>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="email"
+                    placeholder="test@example.com"
+                    value={testEmailAddress}
+                    onChange={e => setTestEmailAddress(e.target.value)}
+                    className="flex-1 px-3 py-2 text-xs bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-xl
+                      text-gray-900 dark:text-white focus:outline-none focus:border-[#2AAA8A] transition-all"
+                  />
+                  <button
+                    onClick={handleSendTestEmail}
+                    disabled={!testEmailAddress}
+                    className="px-4 py-2 bg-gray-200 hover:bg-gray-300 dark:bg-[#252525] dark:hover:bg-[#2e2e2e] text-gray-700 dark:text-gray-300 text-xs font-semibold rounded-xl
+                      disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                  >
+                    Send Test Email
+                  </button>
+                </div>
+                {testEmailStatus !== 'idle' && (
+                  <div className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium border ${
+                    testEmailStatus === 'success'
+                      ? 'bg-green-50 border-green-200 text-green-700'
+                      : 'bg-red-50 border-red-200 text-red-600'
+                  }`}>
+                    {testEmailStatus === 'success'
+                      ? <><FiCheck className="w-3.5 h-3.5" /> Test email sent successfully!</>
+                      : <><FiAlertCircle className="w-3.5 h-3.5" /> Failed to send test email. Check server log.</>}
+                  </div>
+                )}
+              </div>
+
+              <div className="p-4 bg-gray-50 dark:bg-[#111111] rounded-2xl border border-gray-100 dark:border-[#2c2c2c] space-y-3 flex flex-col justify-between">
+                <div>
+                  <p className="text-xs font-bold text-gray-700 dark:text-gray-300">Manual Report Dispatch</p>
+                  <p className="text-[10px] text-gray-400">Trigger immediate dispatch of today&apos;s full production reports to all configured recipients.</p>
+                </div>
+                <button
+                  onClick={handleDispatchSummary}
+                  disabled={dispatchingSummary}
+                  className="w-full py-2 bg-[#0c2340] hover:bg-[#13325b] text-white text-xs font-semibold rounded-xl
+                    disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                >
+                  {dispatchingSummary ? 'Dispatching Reports…' : 'Dispatch Today\'s Summary Now'}
+                </button>
+                {dispatchStatus !== 'idle' && (
+                  <div className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium border ${
+                    dispatchStatus === 'success'
+                      ? 'bg-green-50 border-green-200 text-green-700'
+                      : 'bg-red-50 border-red-200 text-red-600'
+                  }`}>
+                    {dispatchStatus === 'success'
+                      ? <><FiCheck className="w-3.5 h-3.5" /> {dispatchMsg}</>
+                      : <><FiAlertCircle className="w-3.5 h-3.5" /> {dispatchMsg}</>}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* List of existing recipients */}
+            <div>
+              <p className="text-xs font-bold text-gray-700 dark:text-gray-300 mb-2">Configured Recipients</p>
+              {recipients.length === 0 ? (
+                <p className="text-xs text-gray-400 italic">No report recipients configured.</p>
+              ) : (
+                <div className="border border-gray-100 dark:border-[#2c2c2c] rounded-xl overflow-hidden">
+                  <table className="w-full text-xs">
+                    <thead className="bg-gray-50 dark:bg-[#111111]">
+                      <tr>
+                        <th className="px-3 py-2 text-left font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Name</th>
+                        <th className="px-3 py-2 text-left font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Email</th>
+                        <th className="px-3 py-2 text-left font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Role</th>
+                        <th className="px-3 py-2 text-left font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Allocated Plants</th>
+                        <th className="px-3 py-2 w-12" />
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 dark:divide-[#2c2c2c]">
+                      {recipients.map(r => (
+                        <tr key={r.id} className="hover:bg-gray-50 dark:hover:bg-[#111111]">
+                          <td className="px-3 py-2 font-medium text-gray-900 dark:text-white">{r.name}</td>
+                          <td className="px-3 py-2 text-gray-600 dark:text-gray-300">{r.email}</td>
+                          <td className="px-3 py-2 font-semibold">
+                            <span className={`px-2 py-0.5 rounded text-[10px] ${
+                              r.role === 'DIRECTOR'
+                                ? 'bg-purple-50 text-purple-600 border border-purple-100'
+                                : 'bg-blue-50 text-blue-600 border border-blue-100'
+                            }`}>
+                              {r.role}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-gray-600 dark:text-gray-300">
+                            {r.role === 'DIRECTOR' ? (
+                              <span className="text-[#2AAA8A] font-semibold">All Plants</span>
+                            ) : (
+                              r.allocated_plants || <span className="text-red-400 italic">None</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            <button
+                              onClick={() => handleDeleteRecipient(r.id)}
+                              disabled={recBusy}
+                              className="text-red-500 hover:text-red-600 disabled:opacity-50"
+                              title="Delete"
+                            >
+                              <FiTrash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           </motion.div>
         )}
 

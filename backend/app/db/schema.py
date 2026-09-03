@@ -390,6 +390,24 @@ def create_holidays_table():
         conn.commit()
 
 
+def create_email_recipients_table():
+    """Create EmailRecipients table for automated report recipients config."""
+    sql = """
+    IF OBJECT_ID('dbo.EmailRecipients', 'U') IS NULL
+    CREATE TABLE dbo.EmailRecipients (
+        id INT PRIMARY KEY IDENTITY(1,1),
+        name NVARCHAR(100) NOT NULL,
+        email NVARCHAR(100) NOT NULL UNIQUE,
+        role NVARCHAR(20) NOT NULL, -- 'MANAGER' or 'DIRECTOR'
+        allocated_plants NVARCHAR(100) NULL, -- comma-separated list, e.g. 'SP-01,SP-05,SP-06', or NULL
+        created_at DATETIME2 DEFAULT GETDATE()
+    );
+    """
+    with get_connection() as conn:
+        conn.execute(sql)
+        conn.commit()
+
+
 def _schema_exists() -> bool:
     """Returns True if the core tables already exist in the database."""
     sql = """
@@ -416,6 +434,7 @@ def initialize_schema():
             create_settings_table()
             create_plant_targets_table()
             create_holidays_table()
+            create_email_recipients_table()
             migrate_add_last_belt_active()
             print("✅ Stored procedures refreshed.")
             return
@@ -431,6 +450,7 @@ def initialize_schema():
         create_settings_table()
         create_plant_targets_table()
         create_holidays_table()
+        create_email_recipients_table()
         print("✅ Schema initialization complete!")
     except Exception as e:
         print(f"❌ Schema initialization failed: {e}")

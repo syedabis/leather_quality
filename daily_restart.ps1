@@ -76,7 +76,30 @@ if ($launchProc) {
     Log "No running launch.ps1 window found."
 }
 
-Start-Sleep 2
+
+# Wait until the old launch.ps1 process is fully gone before re-launching.
+# Loops indefinitely and retries force-killing if the process is stubborn,
+# guaranteeing we never trigger the duplicate-instance guard in the new run.
+$_attempts = 0
+while ($true) {
+    $_stillThere = Get-WmiObject Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like "*launch.ps1*" }
+    
+    if (-not $_stillThere) {
+        Log "Old launcher is completely gone. Proceeding with restart."
+        break
+    }
+    
+    $_attempts++
+    Log "Old launcher (PID $(($_stillThere | Select-Object -First 1).ProcessId)) still closing... (attempt $_attempts)"
+    
+    if ($_attempts % 5 -eq 0) {
+        Log "Stubborn launcher detected, retrying force-kill on all matching processes..."
+        $_stillThere | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    }
+    
+    Start-Sleep 1
+}
 
 # ── 4. Re-launch fresh ──────────────────────────────────────────────────────
 $startBat = Join-Path $DEPLOY_DIR $START_BAT_NAME
