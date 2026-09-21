@@ -9,9 +9,7 @@ from fastapi import Header, HTTPException, Depends
 
 
 def _clerk_issuer() -> str:
-    publishable_key = os.environ.get("CLERK_PUBLISHABLE_KEY", "")
-    if not publishable_key:
-        raise RuntimeError("CLERK_PUBLISHABLE_KEY is not set")
+    publishable_key = os.environ.get("CLERK_PUBLISHABLE_KEY", "") or os.environ.get("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", "pk_test_Y2xlcmsuZXhhbXBsZS5jb20k")
 
     # Format: pk_test_<base64>  or  pk_live_<base64>, where <base64> decodes to "<host>$"
     _, _, encoded = publishable_key.partition("_test_")

@@ -420,12 +420,50 @@ def _schema_exists() -> bool:
         return (cur.fetchone()[0] or 0) == 3
 
 
+def create_hide_quality_tables():
+    """Create HideQualitySummary and HideDefects tables for leather defect monitoring."""
+    sql = """
+    IF OBJECT_ID('dbo.HideQualitySummary', 'U') IS NULL
+    CREATE TABLE dbo.HideQualitySummary (
+        id INT PRIMARY KEY IDENTITY(1,1),
+        hide_id VARCHAR(50) NOT NULL,
+        plant_id VARCHAR(10) NOT NULL,
+        lot_no VARCHAR(50) NULL,
+        timestamp DATETIME2 DEFAULT GETDATE(),
+        piece_number INT DEFAULT 0,
+        grade VARCHAR(10) NOT NULL, -- 'PASS' or 'REJECT'
+        total_cuts INT DEFAULT 0,
+        total_holes INT DEFAULT 0,
+        status VARCHAR(20) DEFAULT 'INSPECTED',
+        INDEX idx_hide_plant (plant_id, timestamp)
+    );
+
+    IF OBJECT_ID('dbo.HideDefects', 'U') IS NULL
+    CREATE TABLE dbo.HideDefects (
+        id INT PRIMARY KEY IDENTITY(1,1),
+        hide_id VARCHAR(50) NOT NULL,
+        defect_type VARCHAR(20) NOT NULL, -- 'CUT' or 'HOLE'
+        confidence FLOAT DEFAULT 0.0,
+        bbox_x FLOAT NOT NULL,
+        bbox_y FLOAT NOT NULL,
+        bbox_w FLOAT NOT NULL,
+        bbox_h FLOAT NOT NULL,
+        severity VARCHAR(20) DEFAULT 'MEDIUM',
+        created_at DATETIME2 DEFAULT GETDATE()
+    );
+    """
+    with get_connection() as conn:
+        conn.execute(sql)
+        conn.commit()
+
+
 def initialize_schema():
     """
     On a fresh DB: create all tables, indexes, and stored procedures.
     On an existing DB: only refresh stored procedures (preserves all data).
     """
     try:
+        create_hide_quality_tables()
         if _schema_exists():
             print("Schema already exists — refreshing stored procedures only...")
             create_sp_analytics_by_hour()

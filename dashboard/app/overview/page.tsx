@@ -15,6 +15,7 @@ import { usePlantsData } from '../../hooks/usePlantsData';
 import { useAlerts } from '../../hooks/useAlerts';
 import { PLANTS, fmtDuration, utilColor, API_URL } from '../../lib/constants';
 import type { PlantId } from '../../types';
+import QualitySummaryCard from '../../components/QualitySummaryCard';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type ChartRow = { label: string;[key: string]: string | number };
@@ -444,6 +445,9 @@ export default function Overview() {
           </p>
         </div>
       </motion.div>
+
+      {/* ── Leather Quality Inspection Card ──────────────────────────── */}
+      <QualitySummaryCard />
 
       {/* ── KPI row ──────────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
