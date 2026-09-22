@@ -5,8 +5,8 @@ import { API_URL } from '../lib/constants';
 
 interface DefectLog {
   id: number;
-  hide_id: str;
-  plant_id: str;
+  hide_id: string;
+  plant_id: string;
   defect_type: string;
   confidence: number;
   bbox: number[];

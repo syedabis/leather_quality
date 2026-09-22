@@ -2,7 +2,8 @@
 import { useMemo, useState, useEffect, useCallback } from 'react';
 import { format } from 'date-fns';
 import { motion } from 'framer-motion';
-import { FiDownload, FiCheckCircle, FiXCircle, FiAlertTriangle, FiEye } from 'react-icons/fi';
+import Link from 'next/link';
+import { FiDownload, FiCheckCircle, FiXCircle, FiAlertTriangle, FiEye, FiLayers } from 'react-icons/fi';
 
 import { usePlantsData } from '../../hooks/usePlantsData';
 import { PLANTS, PREVIEW_VIDEOS, API_URL } from '../../lib/constants';
@@ -277,6 +278,15 @@ export default function FloorView() {
               {clockStr}
             </span>
           </div>
+          <Link
+            href="/piece-view"
+            className="flex items-center gap-1.5 bg-[#06b6d4]/15 border border-[#06b6d4]/40
+              hover:bg-[#06b6d4]/25 rounded-xl px-3 py-2 text-xs font-bold text-[#06b6d4]
+              transition-all shadow-sm"
+          >
+            <FiLayers className="w-3.5 h-3.5" />
+            Piece Inspector
+          </Link>
           <button
             onClick={exportPDF}
             className="flex items-center gap-1.5 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c]

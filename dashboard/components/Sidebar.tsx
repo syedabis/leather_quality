@@ -3,7 +3,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useUser, useClerk } from '@clerk/nextjs';
 import { FaBars, FaTimes } from 'react-icons/fa';
 import {
-  FiGrid, FiMap, FiVideo, FiList,
+  FiGrid, FiMap, FiLayers, FiVideo, FiList,
   FiFileText, FiSettings, FiLogOut, FiUsers, FiBell, FiHelpCircle,
 } from 'react-icons/fi';
 import NavItem from './nav/NavItem';
@@ -20,6 +20,7 @@ interface NavEntry {
 const NAV: NavEntry[] = [
   { href: '/overview',   icon: FiGrid,     label: 'Overview'    },
   { href: '/floor-view', icon: FiMap,      label: 'Floor View'  },
+  { href: '/piece-view', icon: FiLayers,   label: 'Piece View'  },
   { href: '/monitoring', icon: FiVideo,    label: 'Monitoring', adminOnly: true },
   { href: '/sessions',   icon: FiList,      label: 'Sessions'   },
   { href: '/reports',    icon: FiFileText,  label: 'Reports'    },
