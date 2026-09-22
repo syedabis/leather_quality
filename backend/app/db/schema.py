@@ -326,10 +326,6 @@ def create_plant_targets_table():
     seed_sql = """
     IF NOT EXISTS (SELECT 1 FROM dbo.PlantTargets WHERE unit = 'SP-01') INSERT INTO dbo.PlantTargets VALUES ('SP-01', 1500);
     IF NOT EXISTS (SELECT 1 FROM dbo.PlantTargets WHERE unit = 'SP-02') INSERT INTO dbo.PlantTargets VALUES ('SP-02', 1500);
-    IF NOT EXISTS (SELECT 1 FROM dbo.PlantTargets WHERE unit = 'SP-03') INSERT INTO dbo.PlantTargets VALUES ('SP-03', 1500);
-    IF NOT EXISTS (SELECT 1 FROM dbo.PlantTargets WHERE unit = 'SP-04') INSERT INTO dbo.PlantTargets VALUES ('SP-04', 1500);
-    IF NOT EXISTS (SELECT 1 FROM dbo.PlantTargets WHERE unit = 'SP-05') INSERT INTO dbo.PlantTargets VALUES ('SP-05', 1500);
-    IF NOT EXISTS (SELECT 1 FROM dbo.PlantTargets WHERE unit = 'SP-06') INSERT INTO dbo.PlantTargets VALUES ('SP-06', 1500);
     """
     with get_connection() as conn:
         conn.execute(sql)

@@ -40,7 +40,7 @@ export default function Monitoring() {
           <h1 className="text-2xl font-bold font-[family-name:var(--font-inter-tight)] tracking-tight text-gray-900 dark:text-white">
             Monitoring
           </h1>
-          <p className="text-xs text-gray-500 mt-0.5">Live feeds — all 6 plants</p>
+          <p className="text-xs text-gray-500 mt-0.5">Live feeds — 2 conveyor lines</p>
         </motion.div>
 
         <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium border ${
@@ -53,8 +53,8 @@ export default function Monitoring() {
         </div>
       </div>
 
-      {/* 3×2 camera grid */}
-      <StaggerContainer stagger={0.07} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+      {/* 2 camera grid */}
+      <StaggerContainer stagger={0.07} className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {PLANTS.map((p) => {
           const plant = plants[p.id];
           return (

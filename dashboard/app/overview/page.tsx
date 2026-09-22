@@ -124,10 +124,6 @@ type ChartView = 'cumulative' | 'per-plant';
 const PLANT_COLORS = [
   { id: 'sp-01', color: '#22C55E', label: 'SP-01' },
   { id: 'sp-02', color: '#F59E0B', label: 'SP-02' },
-  { id: 'sp-03', color: '#8B5CF6', label: 'SP-03' },
-  { id: 'sp-04', color: '#EF4444', label: 'SP-04' },
-  { id: 'sp-05', color: '#3B82F6', label: 'SP-05' },
-  { id: 'sp-06', color: '#EC4899', label: 'SP-06' },
 ];
 const PLANT_SERIES         = PLANT_COLORS.map(p => ({ key: p.id,                  color: p.color, label: p.label }));
 const PLANT_SERIES_UPTIME  = PLANT_COLORS.map(p => ({ key: `${p.id}-uptime`,      color: p.color, label: p.label }));
@@ -420,7 +416,7 @@ export default function Overview() {
 
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-bold text-gray-900 dark:text-white font-[family-name:var(--font-inter-tight)] tracking-tight">
-            Spray Plant Operations Dashboard
+            Leather Quality Inspection Operations Dashboard
           </h1>
           <div className={`w-2 h-2 rounded-full flex-shrink-0 ${connected ? 'bg-green-500 animate-pulse' : 'bg-gray-300'}`} />
         </div>
