@@ -1,6 +1,6 @@
 // ── Domain types shared across the dashboard ─────────────────────────────────
 
-export type PlantId = 'SP-01' | 'SP-02';
+export type PlantId = 'SP-01' | 'SP-02' | 'SP-03' | 'SP-04' | 'SP-05' | 'SP-06';
 
 export type Role = 'admin' | 'supervisor';
 
