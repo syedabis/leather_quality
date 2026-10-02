@@ -1,6 +1,6 @@
 "use client";
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { useUser, useAuth } from '@clerk/nextjs';
+import { useUser, useAuth } from '../../lib/mockAuth';
 import { motion } from 'framer-motion';
 import { FiCamera, FiCheck, FiAlertCircle, FiUser, FiMail, FiShield, FiSliders, FiTrash2, FiCalendar, FiPlus, FiCoffee, FiTarget } from 'react-icons/fi';
 import { API_URL } from '../../lib/constants';
@@ -29,7 +29,7 @@ export default function Settings() {
     return token ? { Authorization: `Bearer ${token}` } : {};
   }, [getToken]);
 
-  const role = getDashboardAccess(user?.publicMetadata).role ?? undefined;
+  const role = getDashboardAccess(user?.publicMetadata).role ?? 'admin';
 
   const [firstName, setFirstName] = useState(user?.firstName ?? '');
   const [lastName,  setLastName]  = useState(user?.lastName  ?? '');
@@ -383,13 +383,7 @@ export default function Settings() {
     }
   }, [user, firstName, lastName, imageFile]);
 
-  if (!isLoaded) {
-    return (
-      <div className="p-6 flex items-center justify-center min-h-screen bg-background">
-        <div className="w-8 h-8 rounded-full border-2 border-[#2AAA8A] border-t-transparent animate-spin" />
-      </div>
-    );
-  }
+
 
   const email = user?.primaryEmailAddress?.emailAddress ?? '';
 

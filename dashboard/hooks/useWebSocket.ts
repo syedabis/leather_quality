@@ -52,13 +52,16 @@ export function useWebSocket<T = WsMessage>(url: string) {
         if (!mountedRef.current) return;
         setConnected(false);
         setReadyState(WebSocket.CLOSED);
+        
+        // Stop polling after 3 retries if backend server is not available
+        if (retryRef.current >= 3) return;
+
         const delay = RECONNECT_DELAYS[Math.min(retryRef.current, RECONNECT_DELAYS.length - 1)];
         retryRef.current++;
         timerRef.current = setTimeout(connect, delay);
       };
-    } catch (err) {
-      // WebSocket constructor can throw in SSR / bad URL
-      console.warn('[useWebSocket] Could not connect:', (err as Error).message);
+    } catch {
+      // WebSocket constructor can throw in SSR / bad URL — silent fallback
     }
   }, [url]);
 

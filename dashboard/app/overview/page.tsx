@@ -134,6 +134,27 @@ const PLANT_NAME: Record<string, string> = Object.fromEntries(PLANTS.map(p => [p
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
+// ── Desk Selection Constants & Data ─────────────────────────────────────────
+const GRADING_DESKS = [
+  { id: 'all', label: 'All Desks' },
+  { id: 'desk-1', label: 'Desk 01' },
+  { id: 'desk-2', label: 'Desk 02' },
+  { id: 'desk-3', label: 'Desk 03' },
+  { id: 'desk-4', label: 'Desk 04' },
+  { id: 'desk-5', label: 'Desk 05' },
+  { id: 'desk-6', label: 'Desk 06' },
+];
+
+const DESK_KPIS: Record<string, { gradeA: string; gradeBC: string; reject: string; area: string; thickness: string; density: string }> = {
+  all:     { gradeA: '48.5%', gradeBC: '41.2%', reject: '10.3%', area: '684.2 m²', thickness: '1.88 mm', density: '1.4 / hide' },
+  'desk-1': { gradeA: '52.4%', gradeBC: '40.4%', reject: '7.2%',  area: '124.5 m²', thickness: '1.92 mm', density: '1.2 / hide' },
+  'desk-2': { gradeA: '44.0%', gradeBC: '43.5%', reject: '12.5%', area: '110.8 m²', thickness: '1.84 mm', density: '1.6 / hide' },
+  'desk-3': { gradeA: '50.1%', gradeBC: '39.9%', reject: '10.0%', area: '115.0 m²', thickness: '1.89 mm', density: '1.3 / hide' },
+  'desk-4': { gradeA: '46.8%', gradeBC: '42.1%', reject: '11.1%', area: '108.4 m²', thickness: '1.86 mm', density: '1.5 / hide' },
+  'desk-5': { gradeA: '49.2%', gradeBC: '41.0%', reject: '9.8%',  area: '112.5 m²', thickness: '1.90 mm', density: '1.3 / hide' },
+  'desk-6': { gradeA: '47.5%', gradeBC: '41.5%', reject: '11.0%', area: '113.0 m²', thickness: '1.87 mm', density: '1.4 / hide' },
+};
+
 export default function Overview() {
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === 'dark';
@@ -145,6 +166,7 @@ export default function Overview() {
   const { plants, connected } = usePlantsData();
   const alerts = useAlerts(plants);
   const [range, setRange] = useState<FilterRange>('hour');
+  const [selectedDesk, setSelectedDesk] = useState<string>('all');
   const [pieceView, setPieceView] = useState<ChartView>('cumulative');
   const [uptimeView, setUptimeView] = useState<ChartView>('cumulative');
   const [idleSessView, setIdleSessView] = useState<ChartView>('cumulative');
@@ -422,6 +444,21 @@ export default function Overview() {
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Desk Selector Dropdown */}
+          <div className="relative">
+            <select
+              value={selectedDesk}
+              onChange={(e) => setSelectedDesk(e.target.value)}
+              className="bg-gray-100 dark:bg-[#252525] border border-gray-200 dark:border-[#2c2c2c] text-gray-900 dark:text-gray-100 text-xs font-semibold rounded-lg px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer shadow-sm transition-all hover:border-gray-300 dark:hover:border-[#444]"
+            >
+              {GRADING_DESKS.map(desk => (
+                <option key={desk.id} value={desk.id} className="bg-white dark:bg-[#1a1a1a] text-xs py-1">
+                  🖥️ {desk.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
           <div className="flex items-center gap-0.5 bg-gray-100 dark:bg-[#252525] border border-gray-200 dark:border-[#2c2c2c] rounded-lg p-0.5">
             {(['hour', 'day', 'week'] as FilterRange[]).map(r => (
               <button
@@ -443,233 +480,264 @@ export default function Overview() {
       </motion.div>
 
       {/* ── Leather Quality Inspection Card ──────────────────────────── */}
-      <QualitySummaryCard />
+      <QualitySummaryCard selectedDesk={selectedDesk} />
 
-      {/* ── KPI row ──────────────────────────────────────────────────── */}
+      {/* ── KPI row: Leather Grading Desk Telemetry ───────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
-        <KpiCard label="Today's Pieces" value={todayTotal.toLocaleString()} iconSrc="/icons/3.png" delay={0.05} />
-        <KpiCard label="Last Hour Pieces" value={lastHourPieces.toLocaleString()} iconSrc="/icons/4.png" delay={0.10} />
-        <KpiCard label="Uptime %" value={`${avgUtil}%`} iconSrc="/icons/5.png" delay={0.15} />
-        <KpiCard label="No. of Runs" value={totalRuns.toString()} iconSrc="/icons/6.png" delay={0.20} />
-        <KpiCard label="Max Idle Time" value={fmtDuration(maxIdleSecs)} iconSrc="/icons/8.png" delay={0.25} />
-        <KpiCard label="Avg Idle Time" value={fmtDuration(avgIdleSecs)} iconSrc="/icons/7.png" delay={0.30} />
+        <KpiCard label="Grade A Yield" value={DESK_KPIS[selectedDesk]?.gradeA ?? '48.5%'} iconSrc="/grading_desk (Icons)/Grade A Yield.png" delay={0.05} />
+        <KpiCard label="Grade B/C Yield" value={DESK_KPIS[selectedDesk]?.gradeBC ?? '41.2%'} iconSrc="/grading_desk (Icons)/Grade B_C Yield.png" delay={0.10} />
+        <KpiCard label="Rejection Rate" value={DESK_KPIS[selectedDesk]?.reject ?? '10.3%'} iconSrc="/grading_desk (Icons)/Rejection Rate.png" delay={0.15} />
+        <KpiCard label="Scanned Area" value={DESK_KPIS[selectedDesk]?.area ?? '684.2 m²'} iconSrc="/grading_desk (Icons)/Scanned Area.png" delay={0.20} />
+        <KpiCard label="Avg Thickness" value={DESK_KPIS[selectedDesk]?.thickness ?? '1.88 mm'} iconSrc="/grading_desk (Icons)/Avg Thickness.png" delay={0.25} />
+        <KpiCard label="Defect Density" value={DESK_KPIS[selectedDesk]?.density ?? '1.4 / hide'} iconSrc="/grading_desk (Icons)/Defect Density.png" delay={0.30} />
       </div>
 
-      {/* ── 2-chart row ──────────────────────────────────────────────── */}
+      {/* ── 2-chart row: Grade Distribution & Vertical Defect Frequency Histogram ────── */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-5">
 
-        {/* Piece Count with toggle */}
+        {/* Grade Distribution Over Time */}
         <motion.div
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.35 }}
-          className="bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-2xl px-3 py-2 shadow-sm"
+          className="bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-2xl p-4 shadow-sm"
         >
-          <div className="flex items-center justify-between mb-2">
-            <p className="text-[11px] font-semibold text-gray-700 uppercase tracking-wide">Piece Count</p>
-            <div className="flex items-center gap-0.5 bg-gray-100 dark:bg-[#252525] border border-gray-200 dark:border-[#2c2c2c] rounded-lg p-0.5">
-              {(['cumulative', 'per-plant'] as ChartView[]).map(v => (
-                <button key={v} onClick={() => setPieceView(v)}
-                  className={`px-2 py-0.5 rounded-md text-[10px] font-medium transition-all 
-                  ${pieceView === v ? 'bg-white dark:bg-[#1a1a1a] text-[#2AAA8A] shadow-sm border border-gray-200 dark:border-[#444]'
-                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}>
-                  {v === 'cumulative' ? 'Cumulative' : 'All Plants'}
-                </button>
-              ))}
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <p className="text-xs font-bold text-gray-900 dark:text-white uppercase tracking-wide">Grade Yield Distribution</p>
+              <div className="flex items-center gap-2.5 text-[10px] font-semibold mt-1">
+                <span className="flex items-center gap-1 text-emerald-500"><span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"/>Grade A</span>
+                <span className="flex items-center gap-1 text-blue-500"><span className="w-2 h-2 rounded-full bg-blue-500 inline-block"/>Grade B</span>
+                <span className="flex items-center gap-1 text-amber-500"><span className="w-2 h-2 rounded-full bg-amber-500 inline-block"/>Grade C</span>
+                <span className="flex items-center gap-1 text-rose-500"><span className="w-2 h-2 rounded-full bg-rose-500 inline-block"/>Reject</span>
+              </div>
             </div>
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+              Live Grading Feed
+            </span>
           </div>
-          <ResponsiveContainer width="100%" height={170}>
-            <LineChart
-              data={pieceData}
-              margin={{ top: 4, right: 8, left: -36, bottom: 0 }}
+          <ResponsiveContainer width="100%" height={180}>
+            <BarChart
+              data={[
+                { time: '08:00', gradeA: 28, gradeB: 18, gradeC: 8, reject: 4 },
+                { time: '09:00', gradeA: 34, gradeB: 22, gradeC: 10, reject: 5 },
+                { time: '10:00', gradeA: 42, gradeB: 26, gradeC: 12, reject: 6 },
+                { time: '11:00', gradeA: 38, gradeB: 24, gradeC: 9, reject: 3 },
+                { time: '12:00', gradeA: 45, gradeB: 30, gradeC: 14, reject: 7 },
+                { time: '13:00', gradeA: 50, gradeB: 32, gradeC: 11, reject: 4 },
+                { time: '14:00', gradeA: 44, gradeB: 28, gradeC: 10, reject: 5 },
+              ]}
+              margin={{ top: 4, right: 8, left: -25, bottom: 0 }}
             >
               <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
-              <XAxis dataKey="label" tick={{ fill: axisColor, fontSize: 10 }} axisLine={false} tickLine={false} />
+              <XAxis dataKey="time" tick={{ fill: axisColor, fontSize: 10 }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fill: axisColor, fontSize: 10 }} axisLine={false} tickLine={false} />
-              <Tooltip content={<ChartTooltip />} cursor={{ stroke: cursorStroke, strokeWidth: 1 }} />
-              {pieceView === 'cumulative' ? (
-                <Line type="monotone" dataKey="total" name="Total" stroke="#2AAA8A"
-                  strokeWidth={2} dot={{ r: 3, fill: '#2AAA8A', strokeWidth: 0 }}
-                  activeDot={{ r: 5 }} animationDuration={700} />
-              ) : PLANT_SERIES.map(s => (
-                <Line key={s.key} type="monotone" dataKey={s.key} name={s.label} stroke={s.color}
-                  strokeWidth={2} dot={{ r: 3, fill: s.color, strokeWidth: 0 }}
-                  activeDot={{ r: 5 }} animationDuration={700} />
-              ))}
-            </LineChart>
+              <Tooltip content={<ChartTooltip />} cursor={{ fill: cursorFill }} />
+              <Bar dataKey="gradeA" name="Grade A (Premium)" fill="#22c55e" radius={[3, 3, 0, 0]} maxBarSize={12} />
+              <Bar dataKey="gradeB" name="Grade B (Standard)" fill="#3b82f6" radius={[3, 3, 0, 0]} maxBarSize={12} />
+              <Bar dataKey="gradeC" name="Grade C (Commercial)" fill="#eab308" radius={[3, 3, 0, 0]} maxBarSize={12} />
+              <Bar dataKey="reject" name="Reject / Reclass" fill="#ef4444" radius={[3, 3, 0, 0]} maxBarSize={12} />
+            </BarChart>
           </ResponsiveContainer>
         </motion.div>
 
-        {/* Uptime vs Downtime with toggle */}
+        {/* Vertical Defect Frequency Histogram with Hover Definition Tooltips */}
         <motion.div
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.40 }}
-          className="bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-2xl px-3 py-2 shadow-sm"
+          className="bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-2xl p-4 shadow-sm"
         >
-          <div className="flex items-center justify-between mb-2">
-            <p className="text-[11px] font-semibold text-gray-700 uppercase tracking-wide">Uptime vs Downtime</p>
-            <div className="flex items-center gap-0.5 bg-gray-100 dark:bg-[#252525] border border-gray-200 dark:border-[#2c2c2c] rounded-lg p-0.5">
-              {(['cumulative', 'per-plant'] as ChartView[]).map(v => (
-                <button
-                  key={v}
-                  onClick={() => setUptimeView(v)}
-                  className={`px-2 py-0.5 rounded-md text-[10px] font-medium transition-all 
-                  ${uptimeView === v ? 'bg-white dark:bg-[#1a1a1a] text-[#2AAA8A] shadow-sm border border-gray-200 dark:border-[#444]'
-                      : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}>
-                  {v === 'cumulative' ? 'Cumulative' : 'All Plants'}
-                </button>
-              ))}
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <p className="text-xs font-bold text-gray-900 dark:text-white uppercase tracking-wide">Top Defect Frequency Histogram</p>
+              <p className="text-[10px] text-gray-500">Hover over defect codes for full classification definition</p>
             </div>
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20">
+              FinishSelect Scan
+            </span>
           </div>
-          <ResponsiveContainer width="100%" height={170}>
-            <LineChart
-              data={uptimeData}
-              margin={{ top: 4, right: 8, left: -36, bottom: 0 }}
+          <ResponsiveContainer width="100%" height={180}>
+            <BarChart
+              data={[
+                { code: 'C', name: 'Cut Mark', category: 'Critical', desc: 'Sharp knife cut or mechanical score mark.', count: 42, color: '#06b6d4' },
+                { code: 'H', name: 'Hole', category: 'Critical', desc: 'Complete puncture or void through hide surface.', count: 28, color: '#7c3aed' },
+                { code: 'DHS', name: 'Deep Scratch', category: 'Critical', desc: 'Deep scratch below grain layer.', count: 24, color: '#d946ef' },
+                { code: 'IB', name: 'Insect Bite', category: 'Surface', desc: 'Raised spots or scars from insect bites.', count: 19, color: '#ea580c' },
+                { code: 'LG', name: 'Light Grain', category: 'Grain', desc: 'Mild texture or grain pattern irregularity.', count: 15, color: '#84cc16' },
+                { code: 'HG', name: 'Heavy Grain', category: 'Grain', desc: 'Coarse or uneven grain structure.', count: 12, color: '#22c55e' },
+                { code: 'NW', name: 'Natural Wrinkle', category: 'Natural', desc: 'Natural neck and shoulder growth wrinkles.', count: 11, color: '#0d9488' },
+                { code: 'PS', name: 'Pin Spot', category: 'Surface', desc: 'Small pinpoint surface discolouration spot.', count: 8, color: '#0284c7' },
+              ]}
+              margin={{ top: 12, right: 8, left: -25, bottom: 0 }}
             >
               <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
-              <XAxis dataKey="label" tick={{ fill: axisColor, fontSize: 10 }} axisLine={false} tickLine={false} />
+              <XAxis dataKey="code" tick={{ fill: axisColor, fontSize: 11, fontWeight: 'bold' }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fill: axisColor, fontSize: 10 }} axisLine={false} tickLine={false} />
-              <Tooltip content={<ChartTooltip />} cursor={{ stroke: cursorStroke, strokeWidth: 1 }} />
-              {uptimeView === 'cumulative' ? (
-                <Line type="monotone" dataKey="uptime" name="Uptime %" stroke="#2AAA8A"
-                  strokeWidth={2} dot={{ r: 3, fill: '#2AAA8A', strokeWidth: 0 }}
-                  activeDot={{ r: 5 }} animationDuration={700} />
-              ) : PLANT_SERIES_UPTIME.map(s => (
-                <Line key={s.key} type="monotone" dataKey={s.key} name={s.label} stroke={s.color}
-                  strokeWidth={2} dot={{ r: 3, fill: s.color, strokeWidth: 0 }}
-                  activeDot={{ r: 5 }} animationDuration={700} />
-              ))}
-            </LineChart>
+              <Tooltip
+                cursor={{ fill: cursorFill }}
+                content={({ payload }) => {
+                  if (!payload?.length) return null;
+                  const data = payload[0].payload;
+                  return (
+                    <div className="bg-[#121212] border border-[#2c2c2c] rounded-xl p-3 shadow-xl max-w-[220px] text-xs">
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <span className="font-extrabold text-sm px-1.5 py-0.5 rounded text-white" style={{ backgroundColor: data.color }}>
+                          {data.code}
+                        </span>
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded uppercase bg-white/10 text-gray-300">
+                          {data.category}
+                        </span>
+                      </div>
+                      <p className="font-bold text-white text-xs mb-1">{data.name}</p>
+                      <p className="text-[10px] text-gray-400 mb-2 leading-tight">{data.desc}</p>
+                      <div className="flex justify-between items-center border-t border-white/10 pt-1.5 text-[11px]">
+                        <span className="text-gray-400">Occurrences:</span>
+                        <span className="font-bold text-emerald-400">{data.count} logged</span>
+                      </div>
+                    </div>
+                  );
+                }}
+              />
+              <Bar dataKey="count" name="Defect Count" radius={[4, 4, 0, 0]} maxBarSize={22}>
+                {[
+                  { code: 'C', color: '#06b6d4' },
+                  { code: 'H', color: '#7c3aed' },
+                  { code: 'DHS', color: '#d946ef' },
+                  { code: 'IB', color: '#ea580c' },
+                  { code: 'LG', color: '#84cc16' },
+                  { code: 'HG', color: '#22c55e' },
+                  { code: 'NW', color: '#0d9488' },
+                  { code: 'PS', color: '#0284c7' },
+                ].map((entry, index) => (
+                  <Cell key={`cell-${index}`} fill={entry.color} />
+                ))}
+              </Bar>
+            </BarChart>
           </ResponsiveContainer>
         </motion.div>
 
       </div>
 
-      {/* ── Bottom 4-panel row ───────────────────────────────────────── */}
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 mb-5" >
+      {/* ── Bottom 4-panel row: Desk Lots & Quality Audit ────────────── */}
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 mb-5">
 
-        {/* Plants Status — live */}
+        {/* Desk Inspection Lots */}
         <motion.div
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.5 }}
-          className="bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-2xl px-3 py-2 shadow-sm"
+          className="bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-2xl px-3 py-3 shadow-sm"
         >
-          <p className="text-[11px] font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide mb-2">Plants Status</p>
-          <div className="space-y-1.5">
-            {plantList.map(p => (
+          <p className="text-[11px] font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide mb-2">Inspection Desk Lots</p>
+          <div className="space-y-2">
+            {[
+              { lot: 'LOT-2026-0922', article: 'Cow Hide Crust', gradeA: '52%', total: 142 },
+              { lot: 'LOT-2026-0921', article: 'Buffalo Upper', gradeA: '46%', total: 118 },
+              { lot: 'LOT-2026-0920', article: 'Sheep Nappa', gradeA: '61%', total: 95 },
+            ].map(item => (
               <div
-                key={p.plant_id}
+                key={item.lot}
                 className="flex items-center justify-between bg-gray-50 dark:bg-[#111111] border border-gray-100 dark:border-[#2c2c2c] rounded-xl px-3 py-2 text-xs"
               >
-                <div className="flex items-center gap-1.5 font-medium text-gray-700 min-w-0">
-                  <span className="font-bold text-gray-900 dark:text-white">{PLANT_NAME[p.plant_id] ?? p.plant_id}</span>
-                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${!p.online ? 'bg-gray-400'
-                      : p.belt_active ? 'bg-green-500 animate-pulse'
-                        : 'bg-amber-400'
-                    }`} />
-                  <span className={!p.online ? 'text-gray-400' : p.belt_active ? 'text-green-600' : 'text-amber-500'}>
-                    {!p.online ? 'Offline' : p.belt_active ? 'Running' : 'Idle'}
-                  </span>
+                <div>
+                  <p className="font-bold text-gray-900 dark:text-white">{item.lot}</p>
+                  <p className="text-[10px] text-gray-500">{item.article}</p>
                 </div>
-                <div className="flex items-center gap-3 text-gray-500 flex-shrink-0 ml-2">
-                  <span className="font-semibold text-gray-700 dark:text-gray-300">{(p.total_count ?? 0).toLocaleString()} pcs</span>
-                  <span>{fmtDuration(p.runtime_s ?? 0)}</span>
+                <div className="text-right">
+                  <span className="font-bold text-emerald-600 dark:text-emerald-400">{item.gradeA} Grade A</span>
+                  <p className="text-[10px] text-gray-400">{item.total} hides</p>
                 </div>
               </div>
             ))}
           </div>
         </motion.div>
 
-        {/* Idle Sessions chart */}
+        {/* Thickness Caliper Distribution */}
         <motion.div
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.55 }}
-          className="bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-2xl px-3 py-2 shadow-sm flex flex-col"
+          className="bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-2xl px-3 py-3 shadow-sm flex flex-col"
         >
-          <div className="flex items-center justify-between mb-2 flex-shrink-0">
-            <p className="text-[11px] font-semibold text-gray-700 uppercase tracking-wide">Idle Sessions</p>
-            <div className="flex items-center gap-0.5 bg-gray-100 dark:bg-[#252525] border border-gray-200 dark:border-[#2c2c2c] rounded-lg p-0.5">
-              {(['cumulative', 'per-plant'] as ChartView[]).map(v => (
-                <button key={v} onClick={() => setIdleSessView(v)}
-                  className={`px-2 py-0.5 rounded-md text-[10px] font-medium transition-all ${idleSessView === v ? 'bg-white dark:bg-[#1a1a1a] text-[#2AAA8A] shadow-sm border border-gray-200 dark:border-[#444]' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}>
-                  {v === 'cumulative' ? 'Cumulative' : 'All Plants'}
-                </button>
-              ))}
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-[11px] font-semibold text-gray-700 uppercase tracking-wide">Caliper Thickness Spread</p>
+            <span className="text-[10px] font-bold text-emerald-500">Target 1.8 - 2.0 mm</span>
+          </div>
+          <div className="space-y-2 text-xs">
+            <div>
+              <div className="flex justify-between text-[11px] mb-1">
+                <span className="text-gray-500">1.8mm - 2.0mm (Uniform Spec)</span>
+                <span className="font-bold text-emerald-400">72%</span>
+              </div>
+              <div className="w-full bg-gray-200 dark:bg-[#252525] h-2 rounded-full overflow-hidden">
+                <div className="bg-emerald-500 h-full rounded-full" style={{ width: '72%' }} />
+              </div>
             </div>
-          </div>
-          <div className="flex-1 min-h-0 relative">
-          <div className="absolute inset-0">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={idleSessionsData} margin={{ top: 4, right: 8, left: -36, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
-              <XAxis dataKey="label" tick={{ fill: axisColor, fontSize: 10 }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fill: axisColor, fontSize: 10 }} axisLine={false} tickLine={false} />
-              <Tooltip content={<ChartTooltip />} cursor={{ stroke: cursorStroke, strokeWidth: 1 }} />
-              {idleSessView === 'cumulative' ? (
-                <Line type="monotone" dataKey="idle_sessions" name="Idle Sessions" stroke="#2AAA8A"
-                  strokeWidth={2} dot={{ r: 3, fill: '#2AAA8A', strokeWidth: 0 }} activeDot={{ r: 5 }} animationDuration={700} />
-              ) : PLANT_SERIES_IDLE_S.map(s => (
-                <Line key={s.key} type="monotone" dataKey={s.key} name={s.label} stroke={s.color}
-                  strokeWidth={2} dot={{ r: 3, fill: s.color, strokeWidth: 0 }} activeDot={{ r: 5 }} animationDuration={700} />
-              ))}
-            </LineChart>
-          </ResponsiveContainer>
-          </div>
+
+            <div>
+              <div className="flex justify-between text-[11px] mb-1">
+                <span className="text-gray-500">1.6mm - 1.79mm (Under Target)</span>
+                <span className="font-bold text-amber-400">18%</span>
+              </div>
+              <div className="w-full bg-gray-200 dark:bg-[#252525] h-2 rounded-full overflow-hidden">
+                <div className="bg-amber-500 h-full rounded-full" style={{ width: '18%' }} />
+              </div>
+            </div>
+
+            <div>
+              <div className="flex justify-between text-[11px] mb-1">
+                <span className="text-gray-500">&gt; 2.01mm (Over Target)</span>
+                <span className="font-bold text-sky-400">10%</span>
+              </div>
+              <div className="w-full bg-gray-200 dark:bg-[#252525] h-2 rounded-full overflow-hidden">
+                <div className="bg-sky-500 h-full rounded-full" style={{ width: '10%' }} />
+              </div>
+            </div>
           </div>
         </motion.div>
 
-        {/* Idle Sessions Duration chart */}
+        {/* Defect Category Breakdown */}
         <motion.div
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.6 }}
-          className="bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-2xl px-3 py-2 shadow-sm flex flex-col"
+          className="bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-2xl px-3 py-3 shadow-sm flex flex-col justify-between"
         >
-          <div className="flex items-center justify-between mb-2 flex-shrink-0">
-            <p className="text-[11px] font-semibold text-gray-700 uppercase tracking-wide">Idle Sessions Duration</p>
-            <div className="flex items-center gap-0.5 bg-gray-100 dark:bg-[#252525] border border-gray-200 dark:border-[#2c2c2c] rounded-lg p-0.5">
-              {(['cumulative', 'per-plant'] as ChartView[]).map(v => (
-                <button key={v} onClick={() => setIdleDurView(v)}
-                  className={`px-2 py-0.5 rounded-md text-[10px] font-medium transition-all ${idleDurView === v ? 'bg-white dark:bg-[#1a1a1a] text-[#2AAA8A] shadow-sm border border-gray-200 dark:border-[#444]' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}>
-                  {v === 'cumulative' ? 'Cumulative' : 'All Plants'}
-                </button>
-              ))}
+          <p className="text-[11px] font-semibold text-gray-700 uppercase tracking-wide mb-2">Defect Category Severity</p>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div className="bg-rose-500/10 border border-rose-500/20 p-2 rounded-xl">
+              <span className="text-[10px] font-bold text-rose-400 uppercase">Critical</span>
+              <p className="text-lg font-extrabold text-rose-400 mt-0.5">54%</p>
+              <p className="text-[9px] text-gray-400">Cuts, Holes, DHS</p>
             </div>
-          </div>
-          <div className="flex-1 min-h-0 relative">
-          <div className="absolute inset-0">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={idleDurationData} margin={{ top: 4, right: 8, left: -36, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
-              <XAxis dataKey="label" tick={{ fill: axisColor, fontSize: 10 }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fill: axisColor, fontSize: 10 }} axisLine={false} tickLine={false} />
-              <Tooltip content={<ChartTooltip />} cursor={{ stroke: cursorStroke, strokeWidth: 1 }} />
-              {idleDurView === 'cumulative' ? (
-                <Line type="monotone" dataKey="idle_time_s" name="Idle Time (min)" stroke="#2AAA8A"
-                  strokeWidth={2} dot={{ r: 3, fill: '#2AAA8A', strokeWidth: 0 }}
-                  activeDot={{ r: 5 }} animationDuration={700} />
-              ) : PLANT_SERIES_IDLE_T.map(s => (
-                <Line key={s.key} type="monotone" dataKey={s.key} name={s.label} stroke={s.color}
-                  strokeWidth={2} dot={{ r: 3, fill: s.color, strokeWidth: 0 }} activeDot={{ r: 5 }} animationDuration={700} />
-              ))}
-            </LineChart>
-          </ResponsiveContainer>
-          </div>
+            <div className="bg-amber-500/10 border border-amber-500/20 p-2 rounded-xl">
+              <span className="text-[10px] font-bold text-amber-400 uppercase">Surface</span>
+              <p className="text-lg font-extrabold text-amber-400 mt-0.5">26%</p>
+              <p className="text-[9px] text-gray-400">Bites, Pinspots</p>
+            </div>
+            <div className="bg-lime-500/10 border border-lime-500/20 p-2 rounded-xl">
+              <span className="text-[10px] font-bold text-lime-400 uppercase">Grain</span>
+              <p className="text-lg font-extrabold text-lime-400 mt-0.5">12%</p>
+              <p className="text-[9px] text-gray-400">Light / Heavy</p>
+            </div>
+            <div className="bg-teal-500/10 border border-teal-500/20 p-2 rounded-xl">
+              <span className="text-[10px] font-bold text-teal-400 uppercase">Natural</span>
+              <p className="text-lg font-extrabold text-teal-400 mt-0.5">8%</p>
+              <p className="text-[9px] text-gray-400">Wrinkles, Veins</p>
+            </div>
           </div>
         </motion.div>
 
-        {/* Alerts — live state-change feed */}
+        {/* Notifications — live state-change feed */}
         <motion.div
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.65 }}
-          className="bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-2xl px-3 py-2 shadow-sm flex flex-col h-[280px] min-h-[260px]"
+          className="bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-2xl px-3 py-2 shadow-sm flex flex-col h-[230px]"
         >
           <div className="flex items-center justify-between mb-2 flex-shrink-0">
-            <p className="text-[11px] font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">Notifications</p>
+            <p className="text-[11px] font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">Quality Notifications</p>
             {alerts.length > 0 && (
               <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-red-500/10 text-red-500">
                 {alerts.filter(a => a.severity === 'critical').length > 0
@@ -682,7 +750,7 @@ export default function Overview() {
           <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-0.5">
             {alerts.length === 0 ? (
               <div className="h-full flex items-center justify-center">
-                <p className="text-xs text-gray-400 text-center">No alerts — all plants nominal</p>
+                <p className="text-xs text-gray-400 text-center">No alerts — all hides in spec</p>
               </div>
             ) : (
               alerts.map((alert, i) => {
@@ -698,116 +766,26 @@ export default function Overview() {
                 const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
                 return (
-                  <motion.div
-                    key={alert.id}
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ duration: 0.25, delay: i === 0 ? 0 : 0 }}
-                    className={`flex items-start gap-2 bg-gray-50 dark:bg-[#111] border border-gray-100 dark:border-[#2c2c2c] border-l-2 ${borderColor} rounded-lg px-2.5 py-1.5`}
+                  <div
+                    key={i}
+                    className={`p-2 rounded-xl bg-gray-50 dark:bg-[#111111] border border-gray-100 dark:border-[#2c2c2c] border-l-2 ${borderColor} text-xs shadow-sm`}
                   >
-                    <span className={`mt-1 w-1.5 h-1.5 rounded-full flex-shrink-0 ${dotColor}`} />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[11px] font-medium text-gray-800 dark:text-gray-200 leading-snug truncate">
-                        {alert.message}
-                      </p>
-                      <p className="text-[10px] text-gray-400 tabular-nums mt-0.5">{timeStr}</p>
+                    <div className="flex items-center justify-between mb-0.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
+                        <span className="font-bold text-gray-900 dark:text-white text-[11px]">
+                          {alert.plant_id}
+                        </span>
+                      </div>
+                      <span className="text-[9px] text-gray-400 font-mono">{timeStr}</span>
                     </div>
-                  </motion.div>
+                    <p className="text-[10px] text-gray-500 dark:text-gray-400 leading-tight">
+                      {alert.message}
+                    </p>
+                  </div>
                 );
               })
             )}
-          </div>
-        </motion.div>
-
-      </div>
-
-      {/* ── New bottom row: Utilisation by Plant + Pieces by Shift ───── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3" >
-
-        {/* Utilisation by Plant */}
-        <motion.div
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.7 }}
-          className="bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-2xl p-3 shadow-sm flex flex-col"
-        >
-          <p className="text-[11px] font-semibold text-gray-700 uppercase tracking-wide mb-2 flex-shrink-0">Utilisation by Plant</p>
-          <div className="flex-1 min-h-0 relative">
-          <div className="absolute inset-0">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart
-              data={plantList.map(p => ({
-                plant: PLANT_NAME[p.plant_id] ?? p.plant_id,
-                utilization: p.utilization ?? 0
-              }))}
-              margin={{ top: 4, right: 8, left: -30, bottom: 0 }}
-            >
-              <CartesianGrid vertical={false} stroke="#F3F4F6" />
-              <XAxis dataKey="plant" tick={{ fill: axisColor, fontSize: 11 }}
-                axisLine={{ stroke: gridColor }} tickLine={false} />
-              <YAxis domain={[0, 100]} tick={{ fill: axisColor, fontSize: 10 }}
-                axisLine={false} tickLine={false} tickFormatter={(v: number) => `${v}%`} />
-              <Tooltip
-                cursor={{ fill: cursorFill }}
-                content={({ payload, label }: TooltipProps<ValueType, NameType>) => {
-                  if (!payload?.length) return null;
-                  return (
-                    <div className="bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-xl px-3 py-2 shadow-lg text-xs">
-                      <span className="text-gray-500 dark:text-gray-400">{label}: </span>
-                      <span className="text-gray-900 dark:text-white font-semibold">{payload[0].value}%</span>
-                    </div>
-                  );
-                }}
-              />
-              <Bar dataKey="utilization" radius={[6, 6, 0, 0]} barSize={32} minPointSize={4} animationDuration={800}>
-                {plantList.map(p => (
-                  <Cell key={p.plant_id} fill={utilColor(p.utilization ?? 0)} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-          </div>
-          </div>
-        </motion.div>
-
-        {/* Pieces by Plant — live */}
-        <motion.div
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.75 }}
-          className="bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2c2c2c] rounded-2xl p-3 shadow-sm"
-        >
-          <p className="text-[11px] font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide mb-2">Pieces by Plant</p>
-          <div className="space-y-3">
-            {plantList.map((p, i) => {
-              const pieces = p.total_count ?? 0;
-              const max = Math.max(...plantList.map(x => x.total_count ?? 0), 1);
-              const pct = Math.round((pieces / max) * 100);
-              const color = pieces > 1000 ? '#22C55E' : pieces >= 800 ? '#F59E0B' : '#EF4444';
-              const label = PLANT_NAME[p.plant_id] ?? p.plant_id;
-              return (
-                <div key={p.plant_id}>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <span className="text-xs font-medium text-gray-700 dark:text-gray-300">{label}</span>
-                    <span className="text-sm font-bold text-gray-900 dark:text-white tabular-nums">
-                      {pieces.toLocaleString()} pcs
-                    </span>
-                  </div>
-                  <div className="h-3 bg-gray-100 dark:bg-[#252525] rounded-full overflow-hidden">
-                    <motion.div
-                      className="h-full rounded-full"
-                      style={{ backgroundColor: color }}
-                      initial={{ width: 0 }}
-                      animate={{ width: `${pct}%` }}
-                      transition={{ duration: 0.8, delay: 0.75 + i * 0.08, ease: 'easeOut' }}
-                    />
-                  </div>
-                  <p className="text-[10px] text-gray-400 mt-0.5">
-                    {p.online ? (p.belt_active ? 'Running' : 'Idle') : 'Offline'}
-                  </p>
-                </div>
-              );
-            })}
           </div>
         </motion.div>
 

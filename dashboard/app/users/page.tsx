@@ -1,6 +1,6 @@
 "use client";
 import { Fragment, useState, useEffect, useCallback, useRef } from 'react';
-import { useUser } from '@clerk/nextjs';
+import { useUser } from '../../lib/mockAuth';
 import { motion } from 'framer-motion';
 import {
   FiUserPlus, FiTrash2, FiMail, FiUser, FiCheck, FiAlertCircle, FiLock,
@@ -296,7 +296,9 @@ export default function Users() {
     }
   }, []);
 
-  if (!isLoaded) {
+  const role = getDashboardAccess(user?.publicMetadata).role ?? 'admin';
+
+  if (!isLoaded && user) {
     return (
       <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
         <div className="w-6 h-6 border-2 border-[#2AAA8A]/30 border-t-[#2AAA8A] rounded-full animate-spin" />
@@ -304,7 +306,7 @@ export default function Users() {
     );
   }
 
-  if (getDashboardAccess(user?.publicMetadata).role !== 'admin') {
+  if (role !== 'admin') {
     return <Unauthorized />;
   }
 

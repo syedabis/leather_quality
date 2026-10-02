@@ -8,6 +8,7 @@ import {
   FiCheckCircle, FiAlertTriangle, FiEye, FiCpu
 } from 'react-icons/fi';
 import { API_URL } from '../../lib/constants';
+import WorkspaceBadge from '../../components/WorkspaceBadge';
 
 // Defect code definitions matching Mindhive FinishSelect specification
 interface DefectCodeDef {
@@ -16,25 +17,26 @@ interface DefectCodeDef {
   color: string;
   textColor: string;
   category: 'critical' | 'surface' | 'grain' | 'natural';
+  description: string;
 }
 
 const DEFECT_CODES: DefectCodeDef[] = [
-  { code: 'H',   name: 'Hole',               color: '#7c3aed', textColor: '#ffffff', category: 'critical' },
-  { code: 'IB',  name: 'Insect Bite',        color: '#ea580c', textColor: '#ffffff', category: 'surface'  },
-  { code: 'RHS', name: 'Right Side Flaw',    color: '#dc2626', textColor: '#ffffff', category: 'critical' },
-  { code: 'FHS', name: 'Front Side Flaw',    color: '#ec4899', textColor: '#ffffff', category: 'critical' },
-  { code: 'DHS', name: 'Deep Hide Scratch',  color: '#d946ef', textColor: '#ffffff', category: 'critical' },
-  { code: 'C',   name: 'Cut Mark',           color: '#06b6d4', textColor: '#000000', category: 'critical' },
-  { code: 'PS',  name: 'Pin Spot',           color: '#0284c7', textColor: '#ffffff', category: 'surface'  },
-  { code: 'NW',  name: 'Natural Wrinkle',    color: '#0d9488', textColor: '#ffffff', category: 'natural'  },
-  { code: 'P',   name: 'Pinhole / Pox',      color: '#10b981', textColor: '#000000', category: 'surface'  },
-  { code: 'LG',  name: 'Light Grain',        color: '#84cc16', textColor: '#000000', category: 'grain'    },
-  { code: 'HG',  name: 'Heavy Grain',        color: '#22c55e', textColor: '#000000', category: 'grain'    },
-  { code: 'CCH', name: 'Cattle Brand',       color: '#991b1b', textColor: '#ffffff', category: 'critical' },
-  { code: 'CR',  name: 'Crack',              color: '#854d0e', textColor: '#ffffff', category: 'surface'  },
-  { code: 'T',   name: 'Tick Mark',          color: '#eab308', textColor: '#000000', category: 'natural'  },
-  { code: 'V',   name: 'Vein Pattern',       color: '#6b21a8', textColor: '#ffffff', category: 'natural'  },
-  { code: 'PL',  name: 'Peeling Flaw',       color: '#65a30d', textColor: '#ffffff', category: 'surface'  },
+  { code: 'H',   name: 'Hole',               color: '#7c3aed', textColor: '#ffffff', category: 'critical', description: 'Complete puncture or void through the leather hide surface.' },
+  { code: 'IB',  name: 'Insect Bite',        color: '#ea580c', textColor: '#ffffff', category: 'surface',  description: 'Raised spots or scars caused by insect bites.' },
+  { code: 'RHS', name: 'Right Side Flaw',    color: '#dc2626', textColor: '#ffffff', category: 'critical', description: 'Severe tear or damage along right hide perimeter.' },
+  { code: 'FHS', name: 'Front Side Flaw',    color: '#ec4899', textColor: '#ffffff', category: 'critical', description: 'Severe tear or defect near the neck/front area.' },
+  { code: 'DHS', name: 'Deep Hide Scratch',  color: '#d946ef', textColor: '#ffffff', category: 'critical', description: 'Deep mechanical or animal scratch below grain layer.' },
+  { code: 'C',   name: 'Cut Mark',           color: '#06b6d4', textColor: '#000000', category: 'critical', description: 'Sharp knife cut or mechanical score mark.' },
+  { code: 'PS',  name: 'Pin Spot',           color: '#0284c7', textColor: '#ffffff', category: 'surface',  description: 'Small pinpoint surface discolouration spot.' },
+  { code: 'NW',  name: 'Natural Wrinkle',    color: '#0d9488', textColor: '#ffffff', category: 'natural',  description: 'Natural neck and shoulder growth wrinkles.' },
+  { code: 'P',   name: 'Pinhole / Pox',      color: '#10b981', textColor: '#000000', category: 'surface',  description: 'Microscopic surface pinholes or pox scarring.' },
+  { code: 'LG',  name: 'Light Grain',        color: '#84cc16', textColor: '#000000', category: 'grain',    description: 'Mild texture or grain pattern irregularity.' },
+  { code: 'HG',  name: 'Heavy Grain',        color: '#22c55e', textColor: '#000000', category: 'grain',    description: 'Coarse, heavy, or uneven grain structure.' },
+  { code: 'CCH', name: 'Cattle Brand',       color: '#991b1b', textColor: '#ffffff', category: 'critical', description: 'Permanent hot-iron or freeze cattle brand mark.' },
+  { code: 'CR',  name: 'Crack',              color: '#854d0e', textColor: '#ffffff', category: 'surface',  description: 'Surface finish cracking or grain rupture.' },
+  { code: 'T',   name: 'Tick Mark',          color: '#eab308', textColor: '#000000', category: 'natural',  description: 'Small natural tick mark scars.' },
+  { code: 'V',   name: 'Vein Pattern',       color: '#6b21a8', textColor: '#ffffff', category: 'natural',  description: 'Visible natural blood vein pattern markings.' },
+  { code: 'PL',  name: 'Peeling Flaw',       color: '#65a30d', textColor: '#ffffff', category: 'surface',  description: 'Surface finish peeling or grain delamination.' },
 ];
 
 interface DefectItem {
@@ -136,6 +138,8 @@ export default function PieceViewPage() {
     ]
   };
 
+  const [hoveredDefectCode, setHoveredDefectCode] = useState<DefectCodeDef | null>(null);
+
   const filteredDefects = activeCodeFilter
     ? currentPiece.defects.filter(d => d.code === activeCodeFilter)
     : currentPiece.defects;
@@ -146,11 +150,11 @@ export default function PieceViewPage() {
   }, {} as Record<string, number>);
 
   return (
-    <div className={`min-h-screen bg-[#050b18] text-white flex flex-col font-sans transition-all duration-300 ${isTvMode ? 'fixed inset-0 z-50 p-4 bg-black' : 'p-4 md:p-6'}`}>
+    <div className={`min-h-screen bg-black text-white flex flex-col font-sans transition-all duration-300 ${isTvMode ? 'fixed inset-0 z-50 p-4 bg-black' : 'p-4 md:p-6'}`}>
       
       {/* ── TOP HEADER: Defect Code Badges Strip (Mindhive FinishSelect Style) ── */}
-      <div className="bg-[#0b1429]/90 border border-cyan-500/20 rounded-2xl p-2.5 mb-4 shadow-xl backdrop-blur-md">
-        <div className="flex items-center justify-between gap-2 overflow-x-auto pb-1 scrollbar-thin scrollbar-thumb-cyan-500/30">
+      <div className="bg-[#121212]/90 border border-neutral-800 rounded-2xl p-2.5 mb-4 shadow-xl backdrop-blur-md relative">
+        <div className="flex items-center justify-between gap-2 overflow-x-auto pb-1 scrollbar-thin scrollbar-thumb-neutral-700">
           <div className="flex items-center gap-1.5 flex-nowrap">
             {DEFECT_CODES.map((def) => {
               const count = defectCountsByCode[def.code] || 0;
@@ -159,7 +163,8 @@ export default function PieceViewPage() {
                 <button
                   key={def.code}
                   onClick={() => setActiveCodeFilter(isSelected ? null : def.code)}
-                  title={`${def.name} (${count} detected)`}
+                  onMouseEnter={() => setHoveredDefectCode(def)}
+                  onMouseLeave={() => setHoveredDefectCode(null)}
                   className={`flex items-center justify-center min-w-[36px] h-8 px-2 rounded font-bold text-xs transition-all duration-200 shadow-md ${
                     isSelected ? 'ring-2 ring-white scale-105 z-10' : 'hover:scale-105 opacity-90 hover:opacity-100'
                   }`}
@@ -181,25 +186,67 @@ export default function PieceViewPage() {
             className={`text-[11px] font-semibold px-3 py-1 rounded border transition-colors flex-shrink-0 ${
               activeCodeFilter
                 ? 'bg-rose-500/20 border-rose-500/40 text-rose-300 hover:bg-rose-500/30'
-                : 'bg-cyan-500/10 border-cyan-500/20 text-cyan-400 hover:bg-cyan-500/20'
+                : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/20'
             }`}
           >
             {activeCodeFilter ? `Clear Filter (${activeCodeFilter})` : 'Show All Codes'}
           </button>
         </div>
+
+        {/* ── Animated Hover Tooltip Card ── */}
+        <AnimatePresence>
+          {hoveredDefectCode && (
+            <motion.div
+              initial={{ opacity: 0, y: -4, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -4, scale: 0.98 }}
+              transition={{ duration: 0.15 }}
+              className="mt-2.5 p-3 bg-[#181818] border border-neutral-700 rounded-xl shadow-2xl flex items-center justify-between gap-4 text-xs z-30"
+              style={{ borderLeftColor: hoveredDefectCode.color, borderLeftWidth: '4px' }}
+            >
+              <div className="flex items-center gap-2.5">
+                <span
+                  className="px-2 py-0.5 rounded font-black text-xs"
+                  style={{ backgroundColor: hoveredDefectCode.color, color: hoveredDefectCode.textColor }}
+                >
+                  {hoveredDefectCode.code}
+                </span>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h4 className="font-bold text-white text-xs">{hoveredDefectCode.name}</h4>
+                    <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.2 rounded bg-neutral-800 text-neutral-400 border border-neutral-700 tracking-wider">
+                      {hoveredDefectCode.category}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-neutral-400 mt-0.5">{hoveredDefectCode.description}</p>
+                </div>
+              </div>
+
+              <div className="text-right flex-shrink-0">
+                <span className={`text-xs font-bold px-2 py-1 rounded-lg ${
+                  (defectCountsByCode[hoveredDefectCode.code] || 0) > 0
+                    ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                    : 'bg-neutral-800 text-neutral-400'
+                }`}>
+                  {defectCountsByCode[hoveredDefectCode.code] || 0} detected on piece
+                </span>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* ── MAIN WORKSPACE: Central Hide Canvas + Right Metrics Panel ── */}
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch min-h-[550px]">
         
         {/* ── LEFT/CENTER: Hide Contour Map Display (8 Cols) ── */}
-        <div className="lg:col-span-8 bg-[#091122] border border-cyan-500/30 rounded-3xl p-4 md:p-6 shadow-2xl relative flex flex-col justify-between overflow-hidden">
+        <div className="lg:col-span-8 bg-[#121212] border border-neutral-800 rounded-3xl p-4 md:p-6 shadow-2xl relative flex flex-col justify-between overflow-hidden">
           
           {/* Subtle Grid Background Pattern */}
           <div 
             className="absolute inset-0 opacity-15 pointer-events-none"
             style={{
-              backgroundImage: 'radial-gradient(#06b6d4 1px, transparent 1px)',
+              backgroundImage: 'radial-gradient(#2aaa8a 1px, transparent 1px)',
               backgroundSize: '24px 24px'
             }}
           />
@@ -207,26 +254,26 @@ export default function PieceViewPage() {
           {/* Top Bar Controls Inside Display */}
           <div className="relative z-10 flex items-center justify-between mb-2">
             <div className="flex items-center gap-3">
-              <span className="bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 font-bold text-xs px-3 py-1 rounded-full flex items-center gap-1.5 shadow-sm">
-                <FiCpu className="w-3.5 h-3.5 animate-pulse text-cyan-400" />
+              <span className="bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 font-bold text-xs px-3 py-1 rounded-full flex items-center gap-1.5 shadow-sm">
+                <FiCpu className="w-3.5 h-3.5 animate-pulse text-emerald-400" />
                 {currentPiece.hide_id} ({currentPiece.plant_id})
               </span>
-              <span className="text-xs text-slate-400 hidden sm:inline-block">
+              <span className="text-xs text-neutral-400 hidden sm:inline-block">
                 Piece #{currentPiece.piece_number} • Lot {currentPiece.lot_no}
               </span>
             </div>
 
             {/* View Modes & TV Toggle */}
             <div className="flex items-center gap-2">
-              <div className="bg-[#0f1d38] border border-slate-700/60 rounded-xl p-1 flex items-center gap-1">
+              <div className="bg-[#1e1e1e] border border-neutral-800 rounded-xl p-1 flex items-center gap-1">
                 {(['silhouette', 'heatmap', 'photo'] as const).map(mode => (
                   <button
                     key={mode}
                     onClick={() => setViewMode(mode)}
                     className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg capitalize transition-all ${
                       viewMode === mode
-                        ? 'bg-cyan-500 text-black shadow-md font-bold'
-                        : 'text-slate-400 hover:text-white'
+                        ? 'bg-emerald-500 text-black shadow-md font-bold'
+                        : 'text-neutral-400 hover:text-white'
                     }`}
                   >
                     {mode}
@@ -236,7 +283,7 @@ export default function PieceViewPage() {
 
               <button
                 onClick={() => setIsTvMode(!isTvMode)}
-                className="p-2 bg-[#0f1d38] border border-cyan-500/30 text-cyan-300 hover:bg-cyan-500/20 rounded-xl transition-all"
+                className="p-2 bg-[#1e1e1e] border border-neutral-800 text-neutral-300 hover:bg-neutral-800 rounded-xl transition-all"
                 title={isTvMode ? "Exit Fullscreen Kiosk Mode" : "Enter Fullscreen TV Kiosk Display"}
               >
                 {isTvMode ? <FiMinimize2 className="w-4 h-4" /> : <FiMaximize2 className="w-4 h-4" />}
@@ -262,9 +309,9 @@ export default function PieceViewPage() {
                 <defs>
                   {/* Glowing Silhouette Gradient */}
                   <linearGradient id="hideGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                    <stop offset="0%" stopColor="#08142c" />
-                    <stop offset="50%" stopColor="#040a17" />
-                    <stop offset="100%" stopColor="#091836" />
+                    <stop offset="0%" stopColor="#1a1a1a" />
+                    <stop offset="50%" stopColor="#0a0a0a" />
+                    <stop offset="100%" stopColor="#141414" />
                   </linearGradient>
 
                   <linearGradient id="heatmapGradient" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -300,7 +347,7 @@ export default function PieceViewPage() {
                      C 180,155 160,125 175,95 
                      C 190,65 220,48 250,45 Z"
                   fill={viewMode === 'heatmap' ? 'url(#heatmapGradient)' : 'url(#hideGradient)'}
-                  stroke="#06b6d4"
+                  stroke="#2aaa8a"
                   strokeWidth="3.5"
                   strokeLinejoin="round"
                   className="transition-all duration-500"
@@ -310,7 +357,7 @@ export default function PieceViewPage() {
                 <path
                   d="M 250,70 Q 250,300 250,530 M 100,285 Q 250,280 400,285 M 120,400 Q 250,395 380,400"
                   fill="none"
-                  stroke="#06b6d4"
+                  stroke="#2aaa8a"
                   strokeWidth="0.8"
                   strokeDasharray="4 4"
                   opacity="0.35"
@@ -374,16 +421,16 @@ export default function PieceViewPage() {
 
               {/* Watermark Branding inside Viewer */}
               <div className="absolute bottom-3 right-4 opacity-40 flex items-center gap-1.5 pointer-events-none">
-                <span className="text-[10px] tracking-widest uppercase font-extrabold text-cyan-400">mindhive FinishSelect™</span>
+                <span className="text-[10px] tracking-widest uppercase font-extrabold text-emerald-400">mindhive FinishSelect™</span>
               </div>
             </motion.div>
           </div>
 
           {/* ── BOTTOM CAROUSEL CONTROLS ── */}
-          <div className="relative z-10 flex items-center justify-between pt-3 border-t border-cyan-500/20">
+          <div className="relative z-10 flex items-center justify-between pt-3 border-t border-neutral-800">
             <button
               onClick={() => setCurrentIndex(prev => (prev === 0 ? pieces.length - 1 : prev - 1))}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#0f1d38] border border-cyan-500/30 text-cyan-300 hover:bg-cyan-500/20 rounded-xl text-xs font-semibold transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1c1c1c] border border-neutral-700 text-neutral-200 hover:bg-neutral-800 rounded-xl text-xs font-semibold transition-all"
             >
               <FiChevronLeft className="w-4 h-4" /> Previous Piece
             </button>
@@ -394,7 +441,7 @@ export default function PieceViewPage() {
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
                   liveAutoCycle
                     ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400 animate-pulse'
-                    : 'bg-[#0f1d38] border-slate-700 text-slate-400 hover:text-white'
+                    : 'bg-[#1c1c1c] border-neutral-700 text-neutral-400 hover:text-white'
                 }`}
               >
                 <FiZap className="w-3.5 h-3.5" />
@@ -404,7 +451,7 @@ export default function PieceViewPage() {
 
             <button
               onClick={() => setCurrentIndex(prev => (prev + 1) % pieces.length)}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#0f1d38] border border-cyan-500/30 text-cyan-300 hover:bg-cyan-500/20 rounded-xl text-xs font-semibold transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1c1c1c] border border-neutral-700 text-neutral-200 hover:bg-neutral-800 rounded-xl text-xs font-semibold transition-all"
             >
               Next Piece <FiChevronRight className="w-4 h-4" />
             </button>
@@ -412,30 +459,30 @@ export default function PieceViewPage() {
         </div>
 
         {/* ── RIGHT METRICS & TELEMETRY PANEL (4 Cols) ── */}
-        <div className="lg:col-span-4 bg-[#091122] border border-cyan-500/30 rounded-3xl p-5 md:p-6 shadow-2xl flex flex-col justify-between">
+        <div className="lg:col-span-4 bg-[#121212] border border-neutral-800 rounded-3xl p-5 md:p-6 shadow-2xl flex flex-col justify-between">
           
           <div>
             {/* Top Brand Logo */}
-            <div className="flex items-center justify-between pb-4 border-b border-cyan-500/20 mb-6">
+            <div className="flex items-center justify-between pb-4 border-b border-neutral-800 mb-6">
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-cyan-500/20 border border-cyan-500/40 flex items-center justify-center text-cyan-400">
+                <div className="w-8 h-8 rounded-lg bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400">
                   <FiLayers className="w-4 h-4" />
                 </div>
                 <div>
                   <h2 className="text-sm font-black tracking-wide text-white uppercase font-[family-name:var(--font-inter-tight)]">
                     FinishSelect™
                   </h2>
-                  <p className="text-[10px] text-cyan-400/80 font-medium">Mindhive Hide Intelligence</p>
+                  <p className="text-[10px] text-emerald-400/80 font-medium">Mindhive Hide Intelligence</p>
                 </div>
               </div>
-              <span className="text-[10px] font-bold text-slate-400 bg-slate-800/80 px-2 py-0.5 rounded-full">
+              <span className="text-[10px] font-bold text-neutral-400 bg-neutral-800 px-2 py-0.5 rounded-full">
                 {currentPiece.plant_id}
               </span>
             </div>
 
             {/* ── GRADE METRIC (Big Prominent Display) ── */}
-            <div className="text-center my-4 py-4 bg-[#0d1a33] border border-cyan-500/20 rounded-2xl relative overflow-hidden shadow-inner">
-              <div className="absolute top-2 left-3 text-[10px] font-bold tracking-widest text-slate-400 uppercase">
+            <div className="text-center my-4 py-4 bg-[#181818] border border-neutral-800 rounded-2xl relative overflow-hidden shadow-inner">
+              <div className="absolute top-2 left-3 text-[10px] font-bold tracking-widest text-neutral-400 uppercase">
                 Hide Grade Classification
               </div>
               
@@ -447,50 +494,50 @@ export default function PieceViewPage() {
                 }`}>
                   {currentPiece.grade}
                 </span>
-                <p className="text-xs font-semibold text-slate-300 mt-1 uppercase tracking-wider">Grade</p>
+                <p className="text-xs font-semibold text-neutral-300 mt-1 uppercase tracking-wider">Grade</p>
               </div>
             </div>
 
             {/* ── METRIC LIST ── */}
             <div className="space-y-4 my-6">
               {/* Area m² */}
-              <div className="flex items-center justify-between p-3.5 bg-[#0d1a33]/80 border border-slate-800 rounded-xl">
+              <div className="flex items-center justify-between p-3.5 bg-[#181818] border border-neutral-800 rounded-xl">
                 <div>
                   <p className="text-2xl font-black text-white tabular-nums">
                     {currentPiece.area_sqm.toFixed(2)}
                   </p>
-                  <p className="text-[11px] font-medium text-slate-400">Area m²</p>
+                  <p className="text-[11px] font-medium text-neutral-400">Area m²</p>
                 </div>
                 <div className="text-right">
-                  <span className="text-xs font-bold text-cyan-400 bg-cyan-500/10 px-2.5 py-1 rounded-lg border border-cyan-500/20">
+                  <span className="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20">
                     Full Surface
                   </span>
                 </div>
               </div>
 
               {/* Brightness from target */}
-              <div className="flex items-center justify-between p-3.5 bg-[#0d1a33]/80 border border-slate-800 rounded-xl">
+              <div className="flex items-center justify-between p-3.5 bg-[#181818] border border-neutral-800 rounded-xl">
                 <div>
                   <p className={`text-2xl font-black tabular-nums ${
                     currentPiece.brightness_from_target < -20 ? 'text-rose-400' : 'text-emerald-400'
                   }`}>
                     {currentPiece.brightness_from_target > 0 ? `+${currentPiece.brightness_from_target}%` : `${currentPiece.brightness_from_target}%`}
                   </p>
-                  <p className="text-[11px] font-medium text-slate-400">Brightness from target</p>
+                  <p className="text-[11px] font-medium text-neutral-400">Brightness from target</p>
                 </div>
                 <div className="text-right">
-                  <span className="text-[10px] text-slate-400 font-semibold block">Delta Spec</span>
-                  <span className="text-xs font-bold text-slate-300">Target ±15%</span>
+                  <span className="text-[10px] text-neutral-400 font-semibold block">Delta Spec</span>
+                  <span className="text-xs font-bold text-neutral-300">Target ±15%</span>
                 </div>
               </div>
 
               {/* Thickness mm */}
-              <div className="flex items-center justify-between p-3.5 bg-[#0d1a33]/80 border border-slate-800 rounded-xl">
+              <div className="flex items-center justify-between p-3.5 bg-[#181818] border border-neutral-800 rounded-xl">
                 <div>
                   <p className="text-2xl font-black text-white tabular-nums">
-                    {currentPiece.thickness_mm.toFixed(2)} <span className="text-sm font-medium text-slate-400">mm</span>
+                    {currentPiece.thickness_mm.toFixed(2)} <span className="text-sm font-medium text-neutral-400">mm</span>
                   </p>
-                  <p className="text-[11px] font-medium text-slate-400">Hide Caliper Thickness</p>
+                  <p className="text-[11px] font-medium text-neutral-400">Hide Caliper Thickness</p>
                 </div>
                 <div className="text-right">
                   <span className="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20">
@@ -500,15 +547,15 @@ export default function PieceViewPage() {
               </div>
 
               {/* Scan Age */}
-              <div className="flex items-center justify-between p-3.5 bg-[#0d1a33]/80 border border-slate-800 rounded-xl">
+              <div className="flex items-center justify-between p-3.5 bg-[#181818] border border-neutral-800 rounded-xl">
                 <div>
-                  <p className="text-2xl font-black text-cyan-400 tabular-nums">
+                  <p className="text-2xl font-black text-emerald-400 tabular-nums">
                     {scanAgeSec}s
                   </p>
-                  <p className="text-[11px] font-medium text-slate-400">Scan age</p>
+                  <p className="text-[11px] font-medium text-neutral-400">Scan age</p>
                 </div>
                 <div className="text-right">
-                  <span className="text-xs font-bold text-slate-300 flex items-center gap-1 justify-end">
+                  <span className="text-xs font-bold text-neutral-300 flex items-center gap-1 justify-end">
                     <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
                     Live Telemetry
                   </span>
@@ -518,10 +565,10 @@ export default function PieceViewPage() {
           </div>
 
           {/* Bottom Actions */}
-          <div className="pt-4 border-t border-cyan-500/20 flex flex-col gap-2">
+          <div className="pt-4 border-t border-neutral-800 flex flex-col gap-2">
             <button 
               onClick={() => alert(`Piece Analysis Certificate generated for ${currentPiece.hide_id}`)}
-              className="w-full py-3 bg-cyan-500 hover:bg-cyan-400 text-black font-extrabold text-xs uppercase tracking-wider rounded-xl transition-all shadow-lg flex items-center justify-center gap-2"
+              className="w-full py-3 bg-emerald-500 hover:bg-emerald-400 text-black font-extrabold text-xs uppercase tracking-wider rounded-xl transition-all shadow-lg flex items-center justify-center gap-2"
             >
               <FiDownload className="w-4 h-4" /> Export Piece Certificate
             </button>

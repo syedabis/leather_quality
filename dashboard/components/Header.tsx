@@ -5,13 +5,20 @@ import { FiBell } from "react-icons/fi";
 import { ThemeToggle } from "./ThemeToggle";
 import { FullscreenToggle } from "./FullscreenToggle";
 import { useNotifications } from "../contexts/NotificationsContext";
+import ProjectSwitcher from "./ProjectSwitcher";
 
 export function Header() {
   const { unread } = useNotifications();
 
   return (
-    <header className="sticky top-0 z-40 h-12 flex items-center justify-end
-      px-5 border-b border-border bg-background/80 backdrop-blur-sm">
+    <header className="sticky top-0 z-40 h-13 flex items-center justify-between
+      px-5 border-b border-border bg-background/85 backdrop-blur-md">
+      {/* Left: Project Switcher */}
+      <div className="flex items-center gap-3">
+        <ProjectSwitcher variant="header" />
+      </div>
+
+      {/* Right: Actions */}
       <div className="flex items-center gap-2">
         <Link
           href="/notifications"
@@ -32,3 +39,4 @@ export function Header() {
     </header>
   );
 }
+

@@ -10,6 +10,7 @@ import { PLANTS, PREVIEW_VIDEOS, API_URL } from '../../lib/constants';
 import { useSidebar } from '../../contexts/SidebarContext';
 import type { PlantState } from '../../types';
 import ConveyorVideoPlayer from '../../components/ConveyorVideoPlayer';
+import WorkspaceBadge from '../../components/WorkspaceBadge';
 
 interface QualitySummary {
   total_inspected: number;

@@ -37,6 +37,16 @@ export function usePlantsData() {
         const newSessionCount = current.session_count + 1;
         const newRuntime = current.runtime_s + 3;
 
+        setRecentCrossings(crossings => [
+          {
+            plant_id: targetId,
+            plant_name: randomPlant.name,
+            total_count: newCount,
+            timestamp: Date.now() / 1000,
+          },
+          ...crossings.slice(0, MAX_CROSSINGS - 1),
+        ]);
+
         return {
           ...prev,
           [targetId]: {
@@ -52,20 +62,10 @@ export function usePlantsData() {
           },
         };
       });
-
-      setRecentCrossings(prev => [
-        {
-          plant_id: targetId,
-          plant_name: randomPlant.name,
-          total_count: (plants[targetId]?.total_count ?? 1000) + 1,
-          timestamp: Date.now() / 1000,
-        },
-        ...prev.slice(0, MAX_CROSSINGS - 1),
-      ]);
     }, 2500);
 
     return () => clearInterval(interval);
-  }, [connected, plants]);
+  }, [connected]);
 
   useEffect(() => {
     if (!lastMessage) return;

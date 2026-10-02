@@ -7,6 +7,7 @@ import AuthWrapper from './AuthWrapper';
 import { Header } from './Header';
 import { SidebarContext } from '../contexts/SidebarContext';
 import { NotificationsProvider } from '../contexts/NotificationsContext';
+import { ProjectProvider } from '../contexts/ProjectContext';
 
 const NO_SIDEBAR_ROUTES = ['/sign-in', '/welcome', '/login'];
 
@@ -25,17 +26,19 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
   const hideSidebar = !showSidebar || isFullscreen;
 
   const content = (
-    <SidebarContext.Provider value={{ collapsed, hidden: hideSidebar }}>
-    <div className="flex">
-      {!hideSidebar && <Sidebar collapsed={collapsed} setCollapsed={setCollapsed} />}
-      <div className={`transition-all duration-300 min-h-screen bg-background flex-1 flex flex-col ${
-        !hideSidebar ? (collapsed ? 'ml-18' : 'ml-58') : ''
-      }`}>
-        {showSidebar && <Header />}
-        {children}
-      </div>
-    </div>
-    </SidebarContext.Provider>
+    <ProjectProvider>
+      <SidebarContext.Provider value={{ collapsed, hidden: hideSidebar }}>
+        <div className="flex">
+          {!hideSidebar && <Sidebar collapsed={collapsed} setCollapsed={setCollapsed} />}
+          <div className={`transition-all duration-300 min-h-screen bg-background flex-1 flex flex-col ${
+            !hideSidebar ? (collapsed ? 'ml-18' : 'ml-58') : ''
+          }`}>
+            {showSidebar && <Header />}
+            {children}
+          </div>
+        </div>
+      </SidebarContext.Provider>
+    </ProjectProvider>
   );
 
   // Wrap dashboard routes in RBAC gate; leave auth/public pages unwrapped.

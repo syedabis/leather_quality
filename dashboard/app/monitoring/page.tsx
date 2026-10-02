@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { FiMaximize2 } from 'react-icons/fi';
-import { useUser } from '@clerk/nextjs';
+import { useUser } from '../../lib/mockAuth';
 import { StaggerContainer, StaggerItem } from '../../components/ui/AnimateIn';
 import LiveThumbnail from '../../components/LiveThumbnail';
 import BeltStatusBadge from '../../components/BeltStatusBadge';
@@ -13,6 +13,7 @@ import { PLANTS } from '../../lib/constants';
 import { getDashboardAccess } from '../../lib/access';
 import type { PlantId } from '../../types';
 import { useRouter } from 'next/navigation';
+import WorkspaceBadge from '../../components/WorkspaceBadge';
 
 export default function Monitoring() {
   const { plants, connected } = usePlantsData();
@@ -20,7 +21,9 @@ export default function Monitoring() {
   const router = useRouter();
   const { user, isLoaded } = useUser();
 
-  if (!isLoaded) {
+  const role = getDashboardAccess(user?.publicMetadata).role ?? 'admin';
+
+  if (!isLoaded && user) {
     return (
       <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
         <div className="w-6 h-6 border-2 border-[#2AAA8A]/30 border-t-[#2AAA8A] rounded-full animate-spin" />
@@ -28,7 +31,7 @@ export default function Monitoring() {
     );
   }
 
-  if (getDashboardAccess(user?.publicMetadata).role !== 'admin') {
+  if (role !== 'admin') {
     return <Unauthorized />;
   }
 
