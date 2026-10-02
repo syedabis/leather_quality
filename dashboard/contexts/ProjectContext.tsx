@@ -137,7 +137,7 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
 
   // Determine initial project based on current URL if possible
   const getProjectFromPath = useCallback((path: string): ProjectId | null => {
-    if (path.startsWith('/overview') || path.startsWith('/piece-view') || path.startsWith('/piece-log')) {
+    if (path.startsWith('/overview') || path.startsWith('/piece-view') || path.startsWith('/piece-log') || path.startsWith('/desk-monitoring')) {
       return 'working-desk';
     }
     if (path.startsWith('/floor-view') || path.startsWith('/monitoring') || path.startsWith('/dust-overview')) {

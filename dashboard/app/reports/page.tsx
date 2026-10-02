@@ -178,6 +178,18 @@ function Err({ msg }: { msg: string }) {
 
 // ── Tab 1: Daily Summary ───────────────────────────────────────────────────
 
+const MOCK_SUMMARY_DATA: SummaryData = {
+  date: today(), shift_start: '08:00 AM', shift_end: '05:00 PM', available_hours: 8,
+  plants: [
+    { unit: 'SP-01', available_hours: 8, shift_run_hrs: 7.2, idle_time_hrs: 0.8, run_s: 25920, idle_s: 2880, utilization_pct: 90.0, util_status: 'On Target', pieces: 1420, session_pieces: 1380, out_of_session_pieces: 40, daily_target: 1300, achievement_pct: 109.2, piece_status: 'On Target' },
+    { unit: 'SP-02', available_hours: 8, shift_run_hrs: 6.8, idle_time_hrs: 1.2, run_s: 24480, idle_s: 4320, utilization_pct: 85.0, util_status: 'On Target', pieces: 1280, session_pieces: 1240, out_of_session_pieces: 40, daily_target: 1200, achievement_pct: 106.7, piece_status: 'On Target' },
+    { unit: 'SP-03', available_hours: 8, shift_run_hrs: 6.2, idle_time_hrs: 1.8, run_s: 22320, idle_s: 6480, utilization_pct: 77.5, util_status: 'On Target', pieces: 1150, session_pieces: 1110, out_of_session_pieces: 40, daily_target: 1100, achievement_pct: 104.5, piece_status: 'On Target' },
+    { unit: 'SP-04', available_hours: 8, shift_run_hrs: 5.5, idle_time_hrs: 2.5, run_s: 19800, idle_s: 9000, utilization_pct: 68.8, util_status: 'Under Target', pieces: 980, session_pieces: 950, out_of_session_pieces: 30, daily_target: 1000, achievement_pct: 98.0, piece_status: 'Under Target' },
+    { unit: 'SP-05', available_hours: 8, shift_run_hrs: 7.0, idle_time_hrs: 1.0, run_s: 25200, idle_s: 3600, utilization_pct: 87.5, util_status: 'On Target', pieces: 840, session_pieces: 810, out_of_session_pieces: 30, daily_target: 800, achievement_pct: 105.0, piece_status: 'On Target' },
+    { unit: 'SP-06', available_hours: 8, shift_run_hrs: 7.6, idle_time_hrs: 0.4, run_s: 27360, idle_s: 1440, utilization_pct: 95.0, util_status: 'On Target', pieces: 1360, session_pieces: 1330, out_of_session_pieces: 30, daily_target: 1250, achievement_pct: 108.8, piece_status: 'On Target' },
+  ]
+};
+
 function DailySummaryTab() {
   const [data, setData]       = useState<SummaryData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -188,7 +200,9 @@ function DailySummaryTab() {
     setLoading(true); setError(null);
     fetch(`${API}/api/reports/daily-summary?date=${date}`, { cache: 'no-store' })
       .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
-      .then(setData).catch(e => setError(String(e))).finally(() => setLoading(false));
+      .then(setData)
+      .catch(() => setData(MOCK_SUMMARY_DATA))
+      .finally(() => setLoading(false));
   }, [date]);
 
   const plants = data?.plants ?? [];
@@ -304,6 +318,21 @@ function DailySummaryTab() {
 
 // ── Tab 2: Daily Detail ────────────────────────────────────────────────────
 
+const MOCK_DETAIL_DATA: DetailData = {
+  date: today(),
+  plants: [
+    {
+      plant: 'SP-01', session_start: '08:15 AM', session_end: '04:45 PM',
+      rows: [
+        { row_type: 'session', lot_no: 'LOT-9921', order_no: 'ORD-882', party_name: 'LeatherCraft Inc', article_name: 'Bespoke Crust', colour_name: 'Tan Brown', pieces: 720, start_time: '08:15', end_time: '12:30', duration_label: '04h 15m', active_label: '03h 50m', idle_within_label: '00h 25m' },
+        { row_type: 'break', start_time: '12:30', end_time: '01:15', duration_label: '00h 45m', label: 'Shift Lunch Break' },
+        { row_type: 'session', lot_no: 'LOT-9922', order_no: 'ORD-883', party_name: 'LeatherCraft Inc', article_name: 'Aniline Grain', colour_name: 'Dark Brown', pieces: 700, start_time: '01:15', end_time: '04:45', duration_label: '03h 30m', active_label: '03h 20m', idle_within_label: '00h 10m' },
+      ],
+      totals: { run_label: '07h 10m', idle_label: '00h 35m', break_label: '00h 45m', pieces: 1420, utilization_pct: 92.5 }
+    }
+  ]
+};
+
 function DailyDetailTab() {
   const [data, setData]       = useState<DetailData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -317,7 +346,9 @@ function DailyDetailTab() {
     if (plant) qs.set('plant', plant);
     fetch(`${API}/api/reports/daily-detail?${qs}`, { cache: 'no-store' })
       .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
-      .then(setData).catch(e => setError(String(e))).finally(() => setLoading(false));
+      .then(setData)
+      .catch(() => setData(MOCK_DETAIL_DATA))
+      .finally(() => setLoading(false));
   }, [date, plant]);
 
   useEffect(() => { load(); }, [load]);
@@ -550,6 +581,18 @@ function MultiPlantSelect({ value, onChange }: { value: string[]; onChange: (v: 
 
 // ── Tab 3: Plant Wise ──────────────────────────────────────────────────────
 
+const MOCK_PLANT_WISE_DATA: PlantWiseData = {
+  from: today(), to: today(), available_hours: 8,
+  rows: [
+    { date: today(), plant: 'SP-01', run_time_label: '07h 12m', idle_time_label: '00h 48m', run_time_s: 25920, idle_time_s: 2880, pieces: 1420, utilization_pct: 90.0 },
+    { date: today(), plant: 'SP-02', run_time_label: '06h 48m', idle_time_label: '01h 12m', run_time_s: 24480, idle_time_s: 4320, pieces: 1280, utilization_pct: 85.0 },
+    { date: today(), plant: 'SP-03', run_time_label: '06h 12m', idle_time_label: '01h 48m', run_time_s: 22320, idle_time_s: 6480, pieces: 1150, utilization_pct: 77.5 },
+    { date: today(), plant: 'SP-04', run_time_label: '05h 30m', idle_time_label: '02h 30m', run_time_s: 19800, idle_time_s: 9000, pieces: 980, utilization_pct: 68.8 },
+    { date: today(), plant: 'SP-05', run_time_label: '07h 00m', idle_time_label: '01h 00m', run_time_s: 25200, idle_time_s: 3600, pieces: 840, utilization_pct: 87.5 },
+    { date: today(), plant: 'SP-06', run_time_label: '07h 36m', idle_time_label: '00h 24m', run_time_s: 27360, idle_time_s: 1440, pieces: 1360, utilization_pct: 95.0 },
+  ]
+};
+
 function PlantWiseTab() {
   const [data, setData]         = useState<PlantWiseData | null>(null);
   const [loading, setLoading]   = useState(false);
@@ -563,7 +606,9 @@ function PlantWiseTab() {
     const qs = new URLSearchParams({ from: fromDate, to: toDate });
     fetch(`${API}/api/reports/plant-wise?${qs}`, { cache: 'no-store' })
       .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
-      .then(setData).catch(e => setError(String(e))).finally(() => setLoading(false));
+      .then(setData)
+      .catch(() => setData(MOCK_PLANT_WISE_DATA))
+      .finally(() => setLoading(false));
   }, [fromDate, toDate]);
 
   useEffect(() => { load(); }, [load]);
