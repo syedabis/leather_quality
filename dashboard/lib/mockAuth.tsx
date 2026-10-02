@@ -8,8 +8,8 @@ import React, { useState, useEffect } from 'react';
 
 export const MOCK_ADMIN_USER = {
   id: 'usr_standalone_admin',
-  email: 'admin@dada.com',
-  password: 'Leanwaste123@0',
+  email: process.env.NEXT_PUBLIC_DEFAULT_ADMIN_EMAIL ?? 'admin@dada.com',
+  password: process.env.NEXT_PUBLIC_DEFAULT_ADMIN_PASSWORD ?? 'Leanwaste123@0',
   firstName: 'Operator',
   lastName: 'Admin',
 };

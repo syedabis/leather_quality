@@ -17,8 +17,8 @@ export default function SignIn() {
   const { signIn } = useSignIn() as any;
   const { setActive } = useClerk();
 
-  const [identifier, setIdentifier] = useState('admin@dada.com');
-  const [password,   setPassword]   = useState('Leanwaste123@0');
+  const [identifier, setIdentifier] = useState(process.env.NEXT_PUBLIC_DEFAULT_ADMIN_EMAIL ?? 'admin@dada.com');
+  const [password,   setPassword]   = useState(process.env.NEXT_PUBLIC_DEFAULT_ADMIN_PASSWORD ?? 'Leanwaste123@0');
   const [showPw,     setShowPw]     = useState(false);
   const [submitErr,  setSubmitErr]  = useState<string | null>(null);
   const [isFetching, setIsFetching] = useState(false);
