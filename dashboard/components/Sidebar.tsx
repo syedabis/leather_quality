@@ -146,7 +146,7 @@ const Sidebar = ({ collapsed, setCollapsed }: SidebarProps) => {
         {/* Sign out button */}
         <button
           onClick={() => {
-            try { signOut(); } catch { window.location.href = '/overview'; }
+            try { signOut(); } catch { localStorage.setItem('standalone_signed_in', 'false'); window.location.href = '/sign-in'; }
           }}
           className={`flex items-center gap-3 px-4 py-2.5 rounded-lg transition-all duration-200
             text-gray-500 dark:text-gray-400 hover:bg-red-500/10 hover:text-red-500 dark:hover:text-red-400 border border-transparent

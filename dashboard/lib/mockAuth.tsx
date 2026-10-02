@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 
 /**
  * Lightweight Standalone Auth Mock (.tsx)
- * Replaces @clerk/nextjs hooks in standalone mode without network dependencies or reload loops.
+ * Manages sign-in state via localStorage to support true login/logout flows.
  */
 
 export const MOCK_ADMIN_USER = {
@@ -14,16 +14,18 @@ export const MOCK_ADMIN_USER = {
   lastName: 'Admin',
 };
 
+function getStoredAuth(): boolean {
+  if (typeof window === 'undefined') return false;
+  return localStorage.getItem('standalone_signed_in') === 'true';
+}
+
 export function useUser() {
-  const [signedIn, setSignedIn] = useState(true);
+  const [signedIn, setSignedIn] = useState<boolean>(false);
+  const [isLoaded, setIsLoaded] = useState<boolean>(false);
 
   useEffect(() => {
-    const authState = localStorage.getItem('standalone_signed_in');
-    if (authState === 'false') {
-      setSignedIn(false);
-    } else {
-      setSignedIn(true);
-    }
+    setSignedIn(getStoredAuth());
+    setIsLoaded(true);
   }, []);
 
   return {
@@ -37,7 +39,7 @@ export function useUser() {
       update: async (data: any) => data,
       setProfileImage: async (data: any) => data,
     } : null,
-    isLoaded: true,
+    isLoaded,
     isSignedIn: signedIn,
   };
 }
@@ -56,21 +58,18 @@ export function useClerk() {
 }
 
 export function useAuth() {
-  const [signedIn, setSignedIn] = useState(true);
+  const [signedIn, setSignedIn] = useState<boolean>(false);
+  const [isLoaded, setIsLoaded] = useState<boolean>(false);
 
   useEffect(() => {
-    const authState = localStorage.getItem('standalone_signed_in');
-    if (authState === 'false') {
-      setSignedIn(false);
-    } else {
-      setSignedIn(true);
-    }
+    setSignedIn(getStoredAuth());
+    setIsLoaded(true);
   }, []);
 
   return {
     getToken: async () => 'standalone-mock-token',
     userId: signedIn ? MOCK_ADMIN_USER.id : null,
-    isLoaded: true,
+    isLoaded,
     isSignedIn: signedIn,
   };
 }
@@ -82,6 +81,16 @@ export function useSignIn() {
       status: 'complete',
       createdSessionId: 'sess_standalone_admin',
       create: async ({ identifier, password }: { identifier?: string; password?: string }) => {
+        const validEmail = MOCK_ADMIN_USER.email;
+        const validPw = MOCK_ADMIN_USER.password;
+
+        if (identifier && identifier.trim().toLowerCase() !== validEmail.toLowerCase()) {
+          throw { errors: [{ message: 'Invalid email address.' }] };
+        }
+        if (password && password !== validPw) {
+          throw { errors: [{ message: 'Invalid password. Please check your credentials.' }] };
+        }
+
         localStorage.setItem('standalone_signed_in', 'true');
         return {
           status: 'complete',
