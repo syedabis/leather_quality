@@ -37,11 +37,52 @@ interface PieceRecord {
   total_defects: number;
   status: 'PASS' | 'REJECT';
   defects: DefectItem[];
+  rawImage?: string;
+  resultImage?: string;
 }
 
 // ── Mock Initial Dataset ──────────────────────────────────────────────────────
 
 const MOCK_PIECES: PieceRecord[] = [
+  {
+    hide_id: "FRAME-01-CUTS",
+    plant_id: "DESK-01",
+    lot_no: "LOT-2026-1001",
+    piece_number: 1,
+    grade: "REJECT",
+    area_sqm: 4.75,
+    brightness_from_target: -48.0,
+    thickness_mm: 1.88,
+    scan_timestamp: "2026-10-02T16:25:00Z",
+    total_defects: 4,
+    status: "REJECT",
+    rawImage: "/cuts/raw/Frame 1.png",
+    resultImage: "/cuts/cuts identified/Frame 1.png",
+    defects: [
+      { code: "C", name: "Cut Mark", color: "#06b6d4", severity: "HIGH", x: 0.42, y: 0.35, len: 55 },
+      { code: "H", name: "Hole Void", color: "#7c3aed", severity: "HIGH", x: 0.65, y: 0.50, radius: 18 },
+      { code: "DHS", name: "Deep Scratch", color: "#d946ef", severity: "HIGH", x: 0.28, y: 0.60, len: 40 },
+    ]
+  },
+  {
+    hide_id: "FRAME-02-CUTS",
+    plant_id: "DESK-02",
+    lot_no: "LOT-2026-1001",
+    piece_number: 2,
+    grade: "C",
+    area_sqm: 4.60,
+    brightness_from_target: -32.0,
+    thickness_mm: 1.90,
+    scan_timestamp: "2026-10-02T16:20:00Z",
+    total_defects: 2,
+    status: "REJECT",
+    rawImage: "/cuts/raw/Frame 2.png",
+    resultImage: "/cuts/cuts identified/Frame 2.png",
+    defects: [
+      { code: "C", name: "Cut Mark", color: "#06b6d4", severity: "HIGH", x: 0.50, y: 0.45, len: 48 },
+      { code: "LG", name: "Light Grain", color: "#84cc16", severity: "LOW", x: 0.30, y: 0.25, len: 35 },
+    ]
+  },
   {
     hide_id: "HIDE-1042",
     plant_id: "SP-01",
@@ -424,7 +465,8 @@ export default function PieceLogPage() {
           <table className="w-full text-left border-collapse text-xs">
             <thead>
               <tr className="bg-gray-100 dark:bg-[#151515] border-b border-gray-200 dark:border-[#2c2c2c] text-gray-500 dark:text-gray-400 font-semibold uppercase tracking-wider">
-                <th className="py-3 px-4">Preview</th>
+                <th className="py-3 px-4">Raw Image</th>
+                <th className="py-3 px-4">Final Result</th>
                 <th className="py-3 px-4">Hide ID & Lot</th>
                 <th className="py-3 px-4">Scan Time</th>
                 <th className="py-3 px-4">Grade</th>
@@ -437,7 +479,7 @@ export default function PieceLogPage() {
             <tbody className="divide-y divide-gray-100 dark:divide-[#262626]">
               {paginatedRecords.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-8 text-center text-gray-400">
+                  <td colSpan={9} className="py-8 text-center text-gray-400">
                     No hide inspection logs found matching your filters.
                   </td>
                 </tr>
@@ -450,9 +492,32 @@ export default function PieceLogPage() {
                       className="hover:bg-gray-50/80 dark:hover:bg-[#202020] transition-colors group cursor-pointer"
                       onClick={() => setSelectedRecord(r)}
                     >
-                      {/* Preview Thumbnail */}
+                      {/* Raw Image Column */}
                       <td className="py-3 px-4">
-                        <MiniHideThumbnail defects={r.defects} grade={r.grade} />
+                        {r.rawImage ? (
+                          <div className="relative w-20 h-14 rounded-lg bg-black overflow-hidden border border-gray-700 shadow-sm group-hover:border-gray-500 transition-all">
+                            <img src={r.rawImage} alt="Raw Scan" className="w-full h-full object-cover" />
+                            <span className="absolute bottom-0.5 left-0.5 bg-black/80 text-[8px] font-extrabold text-gray-300 px-1 rounded border border-white/10">
+                              RAW
+                            </span>
+                          </div>
+                        ) : (
+                          <MiniHideThumbnail defects={r.defects} grade={r.grade} />
+                        )}
+                      </td>
+
+                      {/* Final Result Column */}
+                      <td className="py-3 px-4">
+                        {r.resultImage ? (
+                          <div className="relative w-20 h-14 rounded-lg bg-black overflow-hidden border border-emerald-500/60 shadow-sm group-hover:border-emerald-400 transition-all">
+                            <img src={r.resultImage} alt="Final AI Result" className="w-full h-full object-cover" />
+                            <span className="absolute bottom-0.5 left-0.5 bg-emerald-500 text-[8px] font-black text-black px-1 rounded shadow uppercase">
+                              CUTS
+                            </span>
+                          </div>
+                        ) : (
+                          <MiniHideThumbnail defects={r.defects} grade={r.grade} />
+                        )}
                       </td>
 
                       {/* Hide ID & Lot */}
@@ -599,27 +664,53 @@ export default function PieceLogPage() {
                   </button>
                 </div>
 
-                {/* Hide Preview SVG */}
-                <div className="bg-gray-900 rounded-2xl p-4 mb-5 flex items-center justify-center relative border border-gray-800">
-                  <div className="w-48 h-56 relative">
-                    <svg viewBox="0 0 500 600" className="w-full h-full">
-                      <path
-                        d="M 250,45 C 280,48 310,65 325,95 C 340,125 320,155 365,170 C 410,185 455,200 460,265 C 465,330 435,370 445,415 C 455,460 415,505 375,525 C 335,545 305,530 250,555 C 195,530 165,545 125,525 C 85,505 45,460 55,415 C 65,370 35,330 40,265 C 45,200 90,185 135,170 C 180,155 160,125 175,95 C 190,65 220,48 250,45 Z"
-                        fill="#1a1a1a"
-                        stroke="#2aaa8a"
-                        strokeWidth="8"
-                      />
-                      {selectedRecord.defects.map((d, i) => (
-                        <g key={i}>
-                          <circle cx={d.x * 500} cy={d.y * 600} r="16" fill={d.color} />
-                          <text x={d.x * 500} y={d.y * 600 + 5} fill="#ffffff" fontSize="18" fontWeight="bold" textAnchor="middle">
-                            {d.code}
-                          </text>
-                        </g>
-                      ))}
-                    </svg>
+                {/* Hide Preview or Side-by-Side Image Comparison */}
+                {selectedRecord.rawImage && selectedRecord.resultImage ? (
+                  <div className="space-y-2 mb-5">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-[10px] font-bold text-gray-400 uppercase">
+                          <span>Raw Image</span>
+                          <span className="text-gray-500">Unannotated</span>
+                        </div>
+                        <div className="bg-black rounded-xl overflow-hidden border border-gray-700 aspect-video relative shadow-md">
+                          <img src={selectedRecord.rawImage} alt="Raw Scan" className="w-full h-full object-cover" />
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-[10px] font-extrabold text-emerald-400 uppercase">
+                          <span>Final Result</span>
+                          <span className="text-emerald-500">Cuts Identified</span>
+                        </div>
+                        <div className="bg-black rounded-xl overflow-hidden border border-emerald-500/60 aspect-video relative shadow-md">
+                          <img src={selectedRecord.resultImage} alt="Final Result" className="w-full h-full object-cover" />
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="bg-gray-900 rounded-2xl p-4 mb-5 flex items-center justify-center relative border border-gray-800">
+                    <div className="w-48 h-56 relative">
+                      <svg viewBox="0 0 500 600" className="w-full h-full">
+                        <path
+                          d="M 250,45 C 280,48 310,65 325,95 C 340,125 320,155 365,170 C 410,185 455,200 460,265 C 465,330 435,370 445,415 C 455,460 415,505 375,525 C 335,545 305,530 250,555 C 195,530 165,545 125,525 C 85,505 45,460 55,415 C 65,370 35,330 40,265 C 45,200 90,185 135,170 C 180,155 160,125 175,95 C 190,65 220,48 250,45 Z"
+                          fill="#1a1a1a"
+                          stroke="#2aaa8a"
+                          strokeWidth="8"
+                        />
+                        {selectedRecord.defects.map((d, i) => (
+                          <g key={i}>
+                            <circle cx={d.x * 500} cy={d.y * 600} r="16" fill={d.color} />
+                            <text x={d.x * 500} y={d.y * 600 + 5} fill="#ffffff" fontSize="18" fontWeight="bold" textAnchor="middle">
+                              {d.code}
+                            </text>
+                          </g>
+                        ))}
+                      </svg>
+                    </div>
+                  </div>
+                )}
 
                 {/* Grade & Status */}
                 <div className="grid grid-cols-2 gap-3 mb-5">
