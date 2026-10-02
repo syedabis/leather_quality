@@ -1,5 +1,5 @@
 "use client";
-import { useAuth, useSignIn, useClerk } from '@clerk/nextjs';
+import { useAuth, useSignIn, useClerk } from '../../../lib/mockAuth';
 import { useEffect, useState } from 'react';
 import { FiAlertCircle } from 'react-icons/fi';
 import { Eye, EyeOff } from 'lucide-react';
@@ -17,8 +17,8 @@ export default function SignIn() {
   const { signIn } = useSignIn() as any;
   const { setActive } = useClerk();
 
-  const [identifier, setIdentifier] = useState('');
-  const [password,   setPassword]   = useState('');
+  const [identifier, setIdentifier] = useState('admin@dada.com');
+  const [password,   setPassword]   = useState('Leanwaste123@0');
   const [showPw,     setShowPw]     = useState(false);
   const [submitErr,  setSubmitErr]  = useState<string | null>(null);
   const [isFetching, setIsFetching] = useState(false);

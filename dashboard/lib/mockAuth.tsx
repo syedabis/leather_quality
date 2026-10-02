@@ -1,42 +1,101 @@
 "use client";
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 
 /**
  * Lightweight Standalone Auth Mock (.tsx)
  * Replaces @clerk/nextjs hooks in standalone mode without network dependencies or reload loops.
  */
 
+export const MOCK_ADMIN_USER = {
+  id: 'usr_standalone_admin',
+  email: 'admin@dada.com',
+  password: 'Leanwaste123@0',
+  firstName: 'Operator',
+  lastName: 'Admin',
+};
+
 export function useUser() {
+  const [signedIn, setSignedIn] = useState(true);
+
+  useEffect(() => {
+    const authState = localStorage.getItem('standalone_signed_in');
+    if (authState === 'false') {
+      setSignedIn(false);
+    } else {
+      setSignedIn(true);
+    }
+  }, []);
+
   return {
-    user: {
-      id: 'usr_standalone_admin',
-      firstName: 'Operator',
-      lastName: 'Admin',
-      primaryEmailAddress: { emailAddress: 'admin@dada.com' },
+    user: signedIn ? {
+      id: MOCK_ADMIN_USER.id,
+      firstName: MOCK_ADMIN_USER.firstName,
+      lastName: MOCK_ADMIN_USER.lastName,
+      primaryEmailAddress: { emailAddress: MOCK_ADMIN_USER.email },
       publicMetadata: { role: 'admin' as const, enabled: true },
       imageUrl: null as string | null,
       update: async (data: any) => data,
       setProfileImage: async (data: any) => data,
-    },
+    } : null,
     isLoaded: true,
-    isSignedIn: true,
+    isSignedIn: signedIn,
   };
 }
 
 export function useClerk() {
   return {
     signOut: async () => {
-      window.location.href = '/overview';
+      localStorage.setItem('standalone_signed_in', 'false');
+      window.location.href = '/sign-in';
     },
+    setActive: async ({ session }: { session: string }) => {
+      localStorage.setItem('standalone_signed_in', 'true');
+      return session;
+    }
   };
 }
 
 export function useAuth() {
+  const [signedIn, setSignedIn] = useState(true);
+
+  useEffect(() => {
+    const authState = localStorage.getItem('standalone_signed_in');
+    if (authState === 'false') {
+      setSignedIn(false);
+    } else {
+      setSignedIn(true);
+    }
+  }, []);
+
   return {
     getToken: async () => 'standalone-mock-token',
-    userId: 'usr_standalone_admin',
+    userId: signedIn ? MOCK_ADMIN_USER.id : null,
     isLoaded: true,
-    isSignedIn: true,
+    isSignedIn: signedIn,
+  };
+}
+
+export function useSignIn() {
+  return {
+    isLoaded: true,
+    signIn: {
+      status: 'complete',
+      createdSessionId: 'sess_standalone_admin',
+      create: async ({ identifier, password }: { identifier?: string; password?: string }) => {
+        localStorage.setItem('standalone_signed_in', 'true');
+        return {
+          status: 'complete',
+          createdSessionId: 'sess_standalone_admin',
+        };
+      },
+      attemptSecondFactor: async () => {
+        localStorage.setItem('standalone_signed_in', 'true');
+        return {
+          status: 'complete',
+          createdSessionId: 'sess_standalone_admin',
+        };
+      }
+    }
   };
 }
 
